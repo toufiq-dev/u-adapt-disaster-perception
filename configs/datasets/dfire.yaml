@@ -1,0 +1,18 @@
+# D-Fire — primary few-shot detection benchmark (fire / smoke)
+# License: verify in Milestone 1 (see docs/licenses.md and issue #1)
+name: dfire
+task: detection
+images: 21527
+classes:
+  - fire
+  - smoke
+annotation_format: coco_boxes        # box annotations provided directly
+mask_to_box: false
+splits:
+  train: data/raw/dfire/train
+  val: data/raw/dfire/val
+  test: data/raw/dfire/test
+meta:
+  zero_shot_map50_gdino: 27.5      # Michailidou et al. (preprint), Table III
+  transfer_map50_gdino: 65.6       # full-label partial fine-tuning upper bound
+  gap_pp: 38.1

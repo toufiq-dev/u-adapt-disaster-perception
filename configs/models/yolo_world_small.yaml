@@ -1,0 +1,11 @@
+# YOLO-World-small — fallback backbone / cross-backbone ablation (ultralytics, AGPL-3.0)
+# NOTE: AGPL-3.0 license — verify implications for the thesis (docs/licenses.md, issue #1)
+name: yolo_world_small
+framework: ultralytics
+checkpoint: yolov8s-worldv2.pt
+license: AGPL-3.0
+inference:
+  conf: 0.05
+  device: cuda
+  top_k: 100
+feature_source: detector_internal

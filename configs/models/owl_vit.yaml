@@ -1,0 +1,10 @@
+# OWL-ViT — fallback backbone / cross-backbone ablation (Apache-2.0)
+name: owl_vit
+framework: transformers
+checkpoint: google/owlvit-base-patch32
+license: Apache-2.0
+inference:
+  score_threshold: 0.1
+  device: cuda
+  top_k: 100
+feature_source: detector_internal

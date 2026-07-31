@@ -1,0 +1,27 @@
+# RescueNet — auxiliary segmentation dataset (novel-category validation, cross-domain transfer)
+# License: verify in Milestone 1 (see docs/licenses.md and issue #1)
+name: rescuenet
+task: segmentation_to_detection
+images: 4494
+annotation_format: semantic_masks
+mask_to_box: true
+
+# Pre-registered class table (frozen before evaluation; see docs/pre_registration.md §Mask-to-Box)
+classes:
+  building:  { id: 1, type: object_like,     retained: true }
+  road:      { id: 2, type: stuff,           retained: false }
+  tree:      { id: 3, type: stuff,           retained: false }
+  grass:     { id: 4, type: stuff,           retained: false }
+  pool:      { id: 5, type: object_like,     retained: true }
+  vehicle:   { id: 6, type: object_like,     retained: true }
+  debris:    { id: 7, type: region_level,    retained: true, note: "included with area filtering; region-level" }
+  sand:      { id: 8, type: stuff,           retained: false }
+  roof:      { id: 9, type: object_like,     retained: true }
+  water:     { id: 10, type: stuff,          retained: false }
+
+retained_classes: [building, pool, vehicle, debris, roof]
+
+splits:
+  train: data/raw/rescuenet/train
+  val: data/raw/rescuenet/val
+  test: data/raw/rescuenet/test

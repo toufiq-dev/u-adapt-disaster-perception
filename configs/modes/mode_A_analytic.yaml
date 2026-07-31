@@ -1,0 +1,24 @@
+# Mode A — PRIMARY strict few-shot, training-free analytic gating
+# w = sigma(-alpha * sigma_tilde^2_visual + beta * sigma_tilde^2_text + gamma * a_tilde_visual)
+# Coefficients are FIXED (not learned) — strict few-shot claim.
+mode: A
+description: training-free analytic gating with normalized uncertainty proxies
+training_free: true
+coefficients:
+  alpha: 1          # visual uncertainty weight (negative in logit)
+  beta: 1           # text uncertainty weight (positive in logit)
+  gamma: 1          # visual affinity weight (positive in logit)
+temperature: 1.0    # T = 1, no learned scaling (no calibration data in Mode A)
+calibration_data: none
+m_templates: 20     # prompt-template ensemble size for text uncertainty
+normalization: min_max
+norm_eps: 1.0e-6    # clamp epsilon for normalized variances
+top_k: 100          # primary proposal limit (k=300 only as ablation)
+mc_dropout_passes: 0  # Mode A does NOT use MC Dropout
+ablations:
+  k1_visual_variance: zero          # k=1 -> sigma^2_visual = 0
+  k1_max_entropy_prior: 0.5         # ablation: replace zero with uninformative prior
+  coefficient_ablations:            # set individual coefficients to 0
+    no_visual_uncertainty: { alpha: 0, beta: 1, gamma: 1 }
+    no_text_uncertainty: { alpha: 1, beta: 0, gamma: 1 }
+    no_affinity: { alpha: 1, beta: 1, gamma: 0 }

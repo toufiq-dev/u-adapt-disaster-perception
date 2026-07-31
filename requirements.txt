@@ -1,0 +1,37 @@
+# U-ADAPT dependencies
+#
+# Colab note: torch/torchvision are preinstalled on Colab (with CUDA). Install
+# only the remaining packages there, or pin to the Colab default torch version.
+#
+# Local GPU install (Linux, CUDA 12.1):
+#   pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu121
+# CPU / Colab: plain `pip install torch torchvision` is fine.
+
+# --- Deep learning core -----------------------------------------------------
+torch>=2.1
+torchvision>=0.16
+transformers>=4.44          # Grounding DINO (Swin-T), OWL-ViT, CLIP
+ultralytics>=8.2            # YOLO-World-small, YOLO11-small (AGPL-3.0)
+
+# --- Numerical / scientific -------------------------------------------------
+numpy>=1.26
+scipy>=1.11
+scikit-learn>=1.4           # optional; Mode B gates use numpy implementations
+pandas>=2.1
+
+# --- Vision / I/O -----------------------------------------------------------
+opencv-python-headless>=4.9
+
+# --- Config / utilities -----------------------------------------------------
+pyyaml>=6.0
+tqdm>=4.66
+einops>=0.7                 # required by some transformers backbones
+
+# --- Plotting (diagnostics / notebooks) --------------------------------------
+matplotlib>=3.8
+seaborn>=0.13
+
+# --- Dev / test ---------------------------------------------------------------
+pytest>=8.0
+jupyter>=1.0
+ipykernel>=6.29

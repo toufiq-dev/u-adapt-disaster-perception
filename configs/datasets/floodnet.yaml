@@ -1,0 +1,26 @@
+# FloodNet+ — auxiliary segmentation dataset (novel-category validation, cross-domain transfer)
+# License: verify in Milestone 1 (see docs/licenses.md and issue #1)
+name: floodnet
+task: segmentation_to_detection
+images: 2289
+annotation_format: semantic_masks
+mask_to_box: true
+
+# Pre-registered class table (frozen before evaluation; see docs/pre_registration.md §Mask-to-Box)
+classes:
+  building-flooded:     { id: 1, type: region_level_damage, retained: true,  note: "region-level damage target; report separately" }
+  building-non-flooded: { id: 2, type: region_level_damage, retained: true,  note: "region-level damage target; report separately" }
+  road-flooded:         { id: 3, type: region_level,        retained: true,  note: "marginal; region-level, report separately" }
+  road-non-flooded:     { id: 4, type: region_level,        retained: true,  note: "marginal; region-level, report separately" }
+  water:                { id: 5, type: stuff,               retained: false }
+  tree:                 { id: 6, type: stuff,               retained: false }
+  vehicle:              { id: 7, type: object_like,         retained: true }
+  pool:                 { id: 8, type: object_like,         retained: true }
+  grass:                { id: 9, type: stuff,               retained: false }
+
+retained_classes: [building-flooded, building-non-flooded, road-flooded, road-non-flooded, vehicle, pool]
+
+splits:
+  train: data/raw/floodnet/train
+  val: data/raw/floodnet/val
+  test: data/raw/floodnet/test

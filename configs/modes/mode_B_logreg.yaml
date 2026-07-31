@@ -1,0 +1,20 @@
+# Mode B — few-shot PLUS lightweight calibration (reported separately from Mode A)
+# PRIMARY Mode B claim: logistic-regression gate (6 params incl. bias) on the
+# normalized 5-D input x = [S_text, S_visual, sigma2_text, sigma2_visual, a_visual].
+mode: B
+description: lightweight calibration with logistic-regression gate on frozen cached features
+gate: logistic_regression
+primary_claim: true
+calibration:
+  boxes_per_class: 20      # 20 labeled boxes per class (target-domain training split)
+  disjoint_from_support: true
+  support_shots: [1, 3, 5]
+  cv_folds: 5              # 5-fold CV on calibration set, report mean + std
+  early_stopping_patience: 10
+  l2_weight_decay: 1.0e-4
+uncertainty:
+  mc_dropout_passes: 10    # T = 10 stochastic forward passes
+  mc_dropout_p: 0.3
+  stability_check_T: 50    # one subset only
+top_k: 100
+temperature: learned       # optimized on calibration split by minimizing NLL

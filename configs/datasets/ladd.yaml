@@ -1,0 +1,17 @@
+# LADD (Large-scale Aerial Disaster Damage) — primary few-shot detection benchmark
+# License: verify in Milestone 1 (see docs/licenses.md and issue #1)
+name: ladd
+task: detection
+images: 1365
+classes:
+  - person          # pedestrian / search-and-rescue target
+annotation_format: coco_boxes        # box annotations provided directly
+mask_to_box: false
+splits:
+  train: data/raw/ladd/train
+  val: data/raw/ladd/val
+  test: data/raw/ladd/test
+meta:
+  zero_shot_map50_gdino: 61.0      # Michailidou et al. (preprint), Table III
+  transfer_map50_gdino: 92.2       # full-label partial fine-tuning upper bound
+  gap_pp: 31.2

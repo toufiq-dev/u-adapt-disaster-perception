@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uadapt"
+version = "0.1.0"
+description = "U-ADAPT: post-hoc uncertainty-aware adaptation of open-vocabulary detectors for few-shot cross-domain disaster perception"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Toufiq" }]
+keywords = [
+    "open-vocabulary-detection",
+    "few-shot",
+    "cross-domain",
+    "uncertainty",
+    "disaster-perception",
+    "aerial-imagery",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+colab = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "transformers>=4.44",
+    "ultralytics>=8.2",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]

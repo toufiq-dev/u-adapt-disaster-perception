@@ -1,0 +1,14 @@
+# Grounding DINO Swin-T — PRIMARY backbone (Apache-2.0)
+# HuggingFace checkpoint "IDEA-Research/grounding-dino-tiny" uses a Swin-T
+# image backbone; per the proposal, this is the primary backbone for both
+# LADD and D-Fire.
+name: grounding_dino_swinT
+framework: transformers
+checkpoint: IDEA-Research/grounding-dino-tiny
+license: Apache-2.0
+inference:
+  box_threshold: 0.25
+  text_threshold: 0.25
+  device: cuda
+  top_k: 100          # proposal limit (k=300 only as ablation)
+feature_source: detector_internal   # ablation: clip | dinov2 | detector_internal
