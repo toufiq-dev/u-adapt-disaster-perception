@@ -92,3 +92,19 @@ section of `docs/pre_registration.md`.
   runs end-to-end (`--calibration`, `--gate-init`, CV + temperature
   optimization); exports added to `src/uadapt/fusion/__init__.py`; unit
   tests in `tests/test_mode_b_calibration.py`.
+- **Supervisor demo added** (no pre-registration change; demo tooling only):
+  - `scripts/demo_mode_a_end_to_end.py` runs the full Mode A pipeline on a
+    50-100 image subset — prototypes (k=5), uncertainty estimates, analytic
+    gate, fused scores — and compares mAP50 against zero-shot raw, text-only
+    (w=0), visual-only (w=1), and naive averaging (w=0.5). Deterministic
+    (seed=0). Uses REAL cached features when present; otherwise a synthetic
+    world (`src/uadapt/demo/synthetic_data.py`) that matches the real
+    FeatureRecord + COCO schemas (mechanism demo, explicitly caveated).
+  - `src/uadapt/demo/pipeline.py` shares the production Mode A / prototype /
+    metrics / diagnostics code paths end-to-end; `src/uadapt/demo/plotting.py`
+    renders Figures 1-6 (gate-weight distribution, D1/D2, D3, gap recovery,
+    qualitative, coefficient ablation).
+  - `notebooks/supervisor_demo_visualizations.ipynb` renders the six
+    publication-quality figures; `docs/supervisor_demo_report.md` is the
+    2-page supervisor summary; `run_this_for_supervisor.sh` executes the
+    whole demo. Unit tests in `tests/test_demo_mode_a.py`.
