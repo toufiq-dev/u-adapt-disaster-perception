@@ -16,14 +16,28 @@ Usage:
 
     # Mode B (lightweight calibration, reported separately)
     python scripts/03_run_fusion.py --mode B \
+        --cache-dir cached_features \
+        --prototypes cached_features/prototypes_k5_seed0.json \
         --mode-config configs/modes/mode_B_logreg.yaml \
         --calibration cached_features/calibration_set.json --out outputs/scores_modeB.json
 
     # Mode B with COCO/LVIS-pretrained gate init (ablation; the former Mode C)
     python scripts/03_run_fusion.py --mode B \
+        --cache-dir cached_features \
+        --prototypes cached_features/prototypes_k5_seed0.json \
         --mode-config configs/modes/mode_B_coco_lvis_init.yaml \
         --calibration cached_features/calibration_set.json \
         --gate-init cached_features/gate_coco_lvis_init.json --out outputs/scores_modeB_init.json
+
+Mode B calibration JSON schema (``--calibration``): see the module docstring of
+src/uadapt/fusion/calibration.py — 20 labeled boxes per class with normalized
+5-D gate inputs plus text/visual correctness flags.
+
+Note on score scale: Mode A outputs the raw cached detector ``score``, while
+Mode B outputs the min-max-normalized fused score
+``(1-w)*S_text + w*S_visual``. mAP ranking is preserved under the monotonic
+normalization, and the modes are reported separately per pre-registration —
+but the two fields are not directly comparable numerically.
 
 Outputs per-proposal fused scores + gate weights as JSON for 04_evaluate.py.
 """
@@ -66,6 +80,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from uadapt.features.cache_engine import load_cache
+    from uadapt.fusion.calibration import run_mode_b
     from uadapt.fusion.mode_a_analytic import ModeAGate
 
     cfg = load_yaml(args.mode_config)
@@ -83,15 +98,39 @@ def main() -> None:
         )
         results = _run_mode_a(records, payload, gate)
     else:  # Mode B
-        if args.gate_init is not None:
-            raise SystemExit(
-                "Mode B COCO/LVIS-pretrained gate init (the former Mode C) lands with "
-                "Mode B wiring in Milestone 6; see configs/modes/mode_B_coco_lvis_init.yaml."
-            )
-        raise SystemExit(
-            "Mode B wiring (logreg/MLP gate + calibration set) lands in Milestone 6; "
-            "see tests/test_mode_a_gate.py for the gate unit tests."
+        if not args.prototypes:
+            raise SystemExit("Mode B requires --prototypes (from 02_build_prototypes.py)")
+        if not args.calibration:
+            raise SystemExit("Mode B requires --calibration (20-box/class calibration set JSON)")
+        calibration = load_json(args.calibration)
+        prototype_payload = load_json(args.prototypes)
+        gate_init = load_json(args.gate_init) if args.gate_init is not None else None
+        outcome = run_mode_b(
+            records,
+            calibration,
+            prototype_payload,
+            cfg,
+            gate_init_payload=gate_init,
         )
+        results = outcome.scores
+        cv = outcome.cv_mean_std()
+        gate_init_label = "coco_lvis" if gate_init is not None else "random"
+        if cv is not None:
+            logger.info(
+                "Mode B (%s, gate-init=%s): T=%.3f, 5-fold CV MSE %.4f±%.4f",
+                cfg.get("gate", "logistic_regression"),
+                gate_init_label,
+                outcome.temperature,
+                cv[0],
+                cv[1],
+            )
+        else:
+            logger.info(
+                "Mode B (%s, gate-init=%s): T=%.3f",
+                cfg.get("gate", "logistic_regression"),
+                gate_init_label,
+                outcome.temperature,
+            )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as fh:

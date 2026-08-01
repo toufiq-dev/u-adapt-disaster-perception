@@ -64,3 +64,31 @@ section of `docs/pre_registration.md`.
   `configs/modes/mode_A_analytic.yaml` (Full + 6 ablations) — config
   exposure, per-variant logit sign semantics, (0,1) weight bounds, and
   ModeAGate/function equivalence (proposal §8 / pre-registration §2).
+- **Proposal section references reconciled** (docs only):
+  - Clarified in `docs/pre_registration.md` snapshot header that the
+    proposal has **no §7.5** — §7 jumps from §7.4 Metrics to §7.6
+    Statistical Testing Plan, and the D1–D5 diagnostics text is contained
+    within §7.6 (the proposal itself cites "D5 (§7.6)").
+  - Fixed internal cross-reference in pre-registration §7: proposal recall
+    (ceiling) is defined in §8 (Baselines), gap recovery in §9 (Statistical
+    Testing).
+  - Removed stale **"proposal §14"** from `docs/licenses.md`: the
+    proposal's Ethics Statement and "Dataset and model licenses" sections
+    are unnumbered (no §14 exists); Grounding DINO license now cited as
+    'Confirmed (proposal: "Dataset and model licenses" section)'.
+- **k=1 max-entropy-prior ablation implemented + tested** (pre-registration
+  §2 / `configs/modes/mode_A_analytic.yaml` `k1_max_entropy_prior: 0.5`):
+  `normalized_visual_variance` gained a backward-compatible `k1_prior`
+  argument (default 0.0 = maximum-likelihood degenerate-sample treatment;
+  0.5 = max-entropy prior); unit tests in `tests/test_mode_a_gate.py` cover
+  config exposure, prior substitution, k≥2 invariance, and the gate-weight
+  shift.
+- **Mode B wiring implemented (Milestone 6, proposal §5.4.1/§5.4.2/§5.4.3):**
+  new `src/uadapt/fusion/calibration.py` turns a 20-box/class calibration
+  set (normalized 5-D gate inputs + text/visual correctness flags) into
+  fused scores via a learned gate. `LogRegGate`/`MLPGate` gained
+  `set_params` + warm-start `fit` (enabling the COCO/LVIS-pretrained gate-init
+  ablation, the former Mode C); `scripts/03_run_fusion.py` Mode B branch now
+  runs end-to-end (`--calibration`, `--gate-init`, CV + temperature
+  optimization); exports added to `src/uadapt/fusion/__init__.py`; unit
+  tests in `tests/test_mode_b_calibration.py`.

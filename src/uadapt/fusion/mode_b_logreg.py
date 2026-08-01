@@ -75,6 +75,15 @@ class LogRegGate:
     _cv_scores: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------------
+    def set_params(self, theta, bias) -> "LogRegGate":
+        """Inject pretrained weights (COCO/LVIS init ablation, former Mode C).
+
+        The subsequent ``fit()`` warm-starts from these values instead of zero.
+        """
+        self._theta = np.asarray(theta, dtype=np.float64)
+        self._bias = float(bias)
+        return self
+
     def fit(
         self,
         X: np.ndarray,
@@ -84,13 +93,18 @@ class LogRegGate:
         """Fit the gate on normalized features X (N, 5) with soft targets.
 
         Uses full-batch gradient descent with L2 regularization on the weight
-        vector only (bias unregularized).
+        vector only (bias unregularized). Warm-starts from ``set_params``
+        weights when provided (COCO/LVIS-pretrained init ablation).
         """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y_soft, dtype=np.float64)
         n, d = X.shape
-        theta = np.zeros(d)
-        bias = 0.0
+        if self._theta is not None and self._theta.shape[0] != d:
+            raise ValueError(
+                f"injected theta has {self._theta.shape[0]} entries but X has {d} features"
+            )
+        theta = self._theta.copy() if self._theta is not None else np.zeros(d)
+        bias = self._bias if self._bias is not None else 0.0
         for epoch in range(self.epochs):
             z = X @ theta + bias
             p = _sigmoid(z)
@@ -125,7 +139,11 @@ class LogRegGate:
             pred = gate.predict(X[test_idx])
             scores.append(float(np.mean((pred - y[test_idx]) ** 2)))
         self._cv_scores = np.asarray(scores)
-        logger.info("LogReg 5-fold MSE: mean %.4f std %.4f", scores.mean(), scores.std())
+        logger.info(
+            "LogReg 5-fold MSE: mean %.4f std %.4f",
+            float(np.mean(scores)),
+            float(np.std(scores)),
+        )
         return self.fit(X, y)
 
     # ------------------------------------------------------------------

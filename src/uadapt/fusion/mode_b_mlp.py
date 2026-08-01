@@ -64,6 +64,18 @@ class MLPGate:
     _history: list = field(default_factory=list)
 
     # ------------------------------------------------------------------
+    def set_params(self, w1, b1, w2, b2) -> "MLPGate":
+        """Inject pretrained weights (COCO/LVIS init ablation, former Mode C).
+
+        The subsequent ``fit()`` warm-starts from these values instead of a
+        fresh random initialization.
+        """
+        self._w1 = np.asarray(w1, dtype=np.float64)
+        self._b1 = np.asarray(b1, dtype=np.float64)
+        self._w2 = np.asarray(w2, dtype=np.float64)
+        self._b2 = float(b2)
+        return self
+
     def fit(
         self,
         X: np.ndarray,
@@ -73,16 +85,25 @@ class MLPGate:
         verbose: bool = False,
     ) -> "MLPGate":
         """Train with dropout + L2. If a validation split is given, apply
-        early stopping (patience) and keep the best-validated parameters."""
+        early stopping (patience) and keep the best-validated parameters.
+        Warm-starts from ``set_params`` weights when provided."""
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y_soft, dtype=np.float64)
         rng = np.random.default_rng(self.rng_seed)
         d_in = X.shape[1]
 
-        w1 = rng.normal(0.0, 0.1, (d_in, self.hidden_dim))
-        b1 = np.zeros(self.hidden_dim)
-        w2 = rng.normal(0.0, 0.1, (self.hidden_dim, 1))
-        b2 = 0.0
+        if self._w1 is not None:
+            if self._w1.shape[0] != d_in or self._w1.shape[1] != self.hidden_dim:
+                raise ValueError(
+                    f"injected w1 has shape {self._w1.shape} but X has {d_in} "
+                    f"features and hidden_dim={self.hidden_dim}"
+                )
+            w1, b1, w2, b2 = self._w1.copy(), self._b1.copy(), self._w2.copy(), self._b2
+        else:
+            w1 = rng.normal(0.0, 0.1, (d_in, self.hidden_dim))
+            b1 = np.zeros(self.hidden_dim)
+            w2 = rng.normal(0.0, 0.1, (self.hidden_dim, 1))
+            b2 = 0.0
 
         use_val = X_val is not None and y_val is not None
         best_val = np.inf
@@ -154,7 +175,11 @@ class MLPGate:
             pred = gate.predict(X[test_idx])
             scores.append(float(np.mean((pred - y[test_idx]) ** 2)))
         self._cv_scores = np.asarray(scores)
-        logger.info("MLP 5-fold MSE: mean %.4f std %.4f", scores.mean(), scores.std())
+        logger.info(
+            "MLP 5-fold MSE: mean %.4f std %.4f",
+            float(np.mean(scores)),
+            float(np.std(scores)),
+        )
         return self.fit(X, y)
 
     # ------------------------------------------------------------------
