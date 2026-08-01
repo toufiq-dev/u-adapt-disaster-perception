@@ -61,6 +61,7 @@ Implemented in `data/mask_to_box/filter.py`; constants are module-level.
 | Maximum box area | < 50% of image area |
 | Aspect ratio | 1:10 – 10:1 |
 | Pure stuff classes | excluded |
+| Minimum valid boxes per class | ≥ 10 across the whole dataset, else excluded and reported |
 | Output | COCO-style JSON (`data/annotations/`, gitignored) |
 
 ## Layout (all outside git)

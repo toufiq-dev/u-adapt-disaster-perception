@@ -9,6 +9,8 @@ Frozen rules (see docs/pre_registration.md, issue #3):
   * aspect ratio      in [MIN_ASPECT, MAX_ASPECT] (1:10 .. 10:1)
   * pure stuff classes excluded (configured via retained class ids)
   * damage-level classes retained but flagged ``region_level``
+  * classes with < MIN_VALID_BOXES_PER_CLASS (10) valid boxes across the
+    whole dataset are excluded from evaluation and reported as such
 
 The rules are module-level constants and MUST NOT change after the pre-
 registration freeze; any change requires a docs/change_log.md entry.
@@ -30,6 +32,7 @@ MIN_BOX_AREA_PX2: float = 32.0
 MAX_BOX_AREA_FRACTION: float = 0.5
 MIN_ASPECT: float = 1.0 / 10.0
 MAX_ASPECT: float = 10.0
+MIN_VALID_BOXES_PER_CLASS: int = 10
 EPS: float = 1e-9
 
 # Class "types" used by the class tables in configs/datasets/*.yaml.
@@ -131,6 +134,7 @@ def masks_to_coco(
     image_paths: Sequence[Path],
     image_sizes: Sequence[Tuple[int, int]],
     class_lookup: Dict[int, Dict[str, Any]],
+    min_valid_boxes: int = MIN_VALID_BOXES_PER_CLASS,
 ) -> Dict[str, Any]:
     """Convert segmentation masks to a filtered COCO-style annotation dict.
 
@@ -139,11 +143,15 @@ def masks_to_coco(
         image_paths: parallel list of image paths (only for metadata).
         image_sizes: parallel list of (height, width).
         class_lookup: pixel value -> {name, retained, type} (from config).
+        min_valid_boxes: classes with fewer than this many valid boxes across
+            the whole dataset are excluded and listed in ``info``
+            (pre-registered rule: 10).
 
     Returns a COCO-style dict with keys ``images``, ``annotations``,
     ``categories`` and ``info``. Only ``retained`` classes are kept; region-
     level classes are kept but tagged via the ``region_level`` flag on the
-    category entry. Pure stuff classes are dropped.
+    category entry. Pure stuff classes are dropped. Classes that do not reach
+    ``min_valid_boxes`` boxes are excluded and recorded in ``info``.
     """
     images: List[Dict[str, Any]] = []
     annotations: List[Dict[str, Any]] = []
@@ -204,6 +212,29 @@ def masks_to_coco(
                 )
                 next_ann_id += 1
 
+    # Pre-registered min-valid-boxes rule: classes with fewer than
+    # ``min_valid_boxes`` boxes across the dataset are excluded from evaluation
+    # and reported (proposal §6 filtering rules, item 4). Every RETAINED class
+    # is checked -- including classes that never appeared (0 boxes).
+    counts: Dict[int, int] = {}
+    for ann in annotations:
+        counts[ann["category_id"]] = counts.get(ann["category_id"], 0) + 1
+
+    excluded_low_count = []
+    for pixel_value, info in class_lookup.items():
+        if not info["retained"]:
+            continue
+        cat_id = cat_id_map.get(int(pixel_value))
+        count = counts.get(cat_id, 0) if cat_id is not None else 0
+        if count < min_valid_boxes:
+            excluded_low_count.append(info["name"])
+    excluded_low_count = sorted(excluded_low_count)
+
+    keep_ids = {c["id"] for c in categories if counts.get(c["id"], 0) >= min_valid_boxes}
+    if keep_ids != {c["id"] for c in categories}:
+        categories = [c for c in categories if c["id"] in keep_ids]
+        annotations = [a for a in annotations if a["category_id"] in keep_ids]
+
     return {
         "info": {
             "description": "U-ADAPT pre-registered mask-to-box conversion",
@@ -211,7 +242,9 @@ def masks_to_coco(
                 "min_area_px2": MIN_BOX_AREA_PX2,
                 "max_area_fraction": MAX_BOX_AREA_FRACTION,
                 "aspect_ratio": [MIN_ASPECT, MAX_ASPECT],
+                "min_valid_boxes_per_class": min_valid_boxes,
             },
+            "excluded_classes_below_min_valid": sorted(excluded_low_count),
         },
         "images": images,
         "annotations": annotations,
@@ -249,9 +282,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--out", required=True, type=Path, help="output COCO JSON")
     parser.add_argument("--suffix", default=".png", help="mask file suffix")
+    parser.add_argument(
+        "--min-valid-boxes",
+        type=int,
+        default=None,
+        help="classes below this box count are excluded (default: config or 10)",
+    )
     args = parser.parse_args(argv)
 
     cfg = _load_yaml(args.class_config)
+    min_valid = (
+        args.min_valid_boxes
+        if args.min_valid_boxes is not None
+        else cfg.get("min_valid_boxes", MIN_VALID_BOXES_PER_CLASS)
+    )
     class_lookup = build_class_lookup(cfg)
     mask_paths = sorted(args.mask_root.glob(f"*{args.suffix}"))
     if not mask_paths:
@@ -268,12 +312,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         for mask_path in mask_paths
         if (args.image_root / mask_path.name).exists()
     ]
-    coco = masks_to_coco(mask_paths, image_paths, image_sizes, class_lookup)
+    coco = masks_to_coco(
+        mask_paths, image_paths, image_sizes, class_lookup, min_valid_boxes=min_valid
+    )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as fh:
         json.dump(coco, fh, indent=2)
     print(f"wrote {args.out} ({len(coco['annotations'])} annotations)")
+    if coco["info"].get("excluded_classes_below_min_valid"):
+        print(
+            "excluded (below min_valid_boxes): "
+            + ", ".join(coco["info"]["excluded_classes_below_min_valid"]),
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -20,6 +20,7 @@ classes:
   water:     { id: 10, type: stuff,          retained: false }
 
 retained_classes: [building, pool, vehicle, debris, roof]
+min_valid_boxes: 10      # classes below this box count are excluded from evaluation (pre-registered)
 
 splits:
   train: data/raw/rescuenet/train

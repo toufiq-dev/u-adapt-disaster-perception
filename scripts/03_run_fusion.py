@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """03_run_fusion.py — Phase 4: uncertainty-gated fusion over cached features.
 
-Applies Mode A (analytic, training-free), Mode B (logreg / MLP gates trained
-on the calibration set), or Mode C (source-learned coefficients, exploratory)
-to produce fused detection scores for every cached proposal.
+Applies Mode A (analytic, training-free) or Mode B (logreg / MLP gates trained
+on the calibration set, optionally initialized from COCO/LVIS-pretrained
+weights — the former Mode C, now a Mode B initialization ablation per proposal
+§5.4.3) to produce fused detection scores for every cached proposal.
 
 Usage:
     # Mode A (primary, strict few-shot, T=1)
@@ -17,6 +18,12 @@ Usage:
     python scripts/03_run_fusion.py --mode B \
         --mode-config configs/modes/mode_B_logreg.yaml \
         --calibration cached_features/calibration_set.json --out outputs/scores_modeB.json
+
+    # Mode B with COCO/LVIS-pretrained gate init (ablation; the former Mode C)
+    python scripts/03_run_fusion.py --mode B \
+        --mode-config configs/modes/mode_B_coco_lvis_init.yaml \
+        --calibration cached_features/calibration_set.json \
+        --gate-init cached_features/gate_coco_lvis_init.json --out outputs/scores_modeB_init.json
 
 Outputs per-proposal fused scores + gate weights as JSON for 04_evaluate.py.
 """
@@ -46,12 +53,14 @@ def load_json(path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run uncertainty-gated fusion on cached features.")
-    parser.add_argument("--mode", choices=["A", "B", "C"], required=True)
+    parser.add_argument("--mode", choices=["A", "B"], required=True)
     parser.add_argument("--cache-dir", default="cached_features")
     parser.add_argument("--prototypes", type=Path, help="JSON from 02_build_prototypes.py")
     parser.add_argument("--mode-config", required=True, type=Path)
     parser.add_argument("--calibration", type=Path, help="Mode B: 20-box/class calibration set JSON")
-    parser.add_argument("--source-artifacts", type=Path, help="Mode C: source-learned coefficients/MLP")
+    parser.add_argument(
+        "--gate-init", type=Path, help="Mode B: COCO/LVIS-pretrained gate initialization (ablation; former Mode C)"
+    )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--split", default="test")
     args = parser.parse_args()
@@ -73,13 +82,16 @@ def main() -> None:
             temperature=cfg.get("temperature", 1.0),
         )
         results = _run_mode_a(records, payload, gate)
-    elif args.mode == "B":
+    else:  # Mode B
+        if args.gate_init is not None:
+            raise SystemExit(
+                "Mode B COCO/LVIS-pretrained gate init (the former Mode C) lands with "
+                "Mode B wiring in Milestone 6; see configs/modes/mode_B_coco_lvis_init.yaml."
+            )
         raise SystemExit(
             "Mode B wiring (logreg/MLP gate + calibration set) lands in Milestone 6; "
             "see tests/test_mode_a_gate.py for the gate unit tests."
         )
-    else:  # Mode C
-        raise SystemExit("Mode C (source-domain transfer) lands in Milestone 8 (exploratory).")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as fh:

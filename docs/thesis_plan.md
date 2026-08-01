@@ -68,8 +68,9 @@ primary deliverables and the issues that track them.
 - **Issues:** ablations + D1–D5 diagnostics (create issues on GitHub).
 
 ### Milestone 8 — Cross-domain transfer experiments (Weeks 7–8)
-- RQ3: Mode A primary transfer test (LADD ⇄ D-Fire); Mode B/C secondary
-  probes; RescueNet/FloodNet+ held-out categories.
+- RQ3: Mode A primary transfer test (LADD ⇄ D-Fire); Mode B secondary probes,
+  including the COCO/LVIS gate-initialization ablation (the former Mode C,
+  proposal §5.4.3); RescueNet/FloodNet+ held-out categories.
 - **Issues:** cross-domain transfer (create issue on GitHub).
 
 ### Milestone 9 — Analysis, figures, tables, and thesis writing (Weeks 9–12)
@@ -84,7 +85,7 @@ primary deliverables and the issues that track them.
 |-------|-----------------|
 | Phase 1–2 (proposals + features) | `scripts/01_extract_and_cache.py`, `src/uadapt/features/cache_engine.py` |
 | Phase 3 (prototypes) | `scripts/02_build_prototypes.py`, `src/uadapt/prototypes/` |
-| Phase 4 (gating) | `scripts/03_run_fusion.py`, `src/uadapt/fusion/` |
+| Phase 4 (gating) | `scripts/03_run_fusion.py`, `src/uadapt/fusion/` (Mode B COCO/LVIS init: `configs/modes/mode_B_coco_lvis_init.yaml`) |
 | Phase 5 (calibration + evaluation) | `scripts/04_evaluate.py`, `src/uadapt/metrics/` |
 | Pilot | `notebooks/00_pilot_colab_memory.ipynb` |
 | Mask→box | `data/mask_to_box/filter.py`, `notebooks/01_mask_to_box_inspection.ipynb` |

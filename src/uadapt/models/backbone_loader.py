@@ -3,7 +3,8 @@
 Loads a frozen open-vocabulary detector and exposes a uniform ``predict``
 interface that returns, per image, the top-k proposals with box features and
 per-class text similarities. The primary backbone is Grounding DINO Swin-T;
-OWL-ViT, YOLO-World-small and YOLO11-small are fallbacks / ablations.
+OWL-ViT and YOLOE26 are cross-backbone ablations; YOLO-World-small and
+YOLO11-small are Colab-friendly fallbacks (proposal §5 Phase 1, §7.3).
 
 Guarded imports keep this module importable (and unit-testable) without
 torch / transformers / ultralytics installed.
@@ -72,6 +73,8 @@ def load_backbone(config: Dict[str, Any], device: str = "cuda") -> Backbone:
         return _OWLViTBackbone(config, device)
     if name in ("yolo_world_small", "yolo11_small"):
         return _YOLOBackbone(config, device)
+    if name == "yolo_e26":
+        return _YOLOEBackbone(config, device)
     raise ValueError(f"Unknown backbone: {name}")
 
 
@@ -178,6 +181,50 @@ class _OWLViTBackbone:
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"OWL-ViT({self.checkpoint})"
+
+
+class _YOLOEBackbone:
+    """YOLOE26 via ultralytics (cross-backbone ablation, proposal §7.3).
+
+    YOLOE supports text, visual, and prompt-free inference modes. The
+    checkpoint and AGPL/Apache status are verified in Milestone 1 (issue #1);
+    loading mirrors _YOLOBackbone until the text/visual prompt modes are wired.
+    """
+
+    def __init__(self, config: Dict[str, Any], device: str = "cuda") -> None:
+        from ultralytics import YOLO
+
+        self.name = config["name"]
+        self.checkpoint = config["checkpoint"]
+        if not self.checkpoint or self.checkpoint == "TBD":
+            raise ValueError(
+                "YOLOE26 checkpoint is TBD (verify in Milestone 1, issue #1); "
+                "update configs/models/yolo_e26.yaml before use."
+            )
+        self.model = YOLO(self.checkpoint)
+        self.conf = config["inference"].get("conf", 0.05)
+        self.top_k = config["inference"].get("top_k", 100)
+
+    @torch_no_grad()
+    def predict(self, image: np.ndarray, classes: List[str], **kw: Any) -> List[Proposal]:
+        results = self.model.predict(
+            source=image, conf=self.conf, classes=None, verbose=False
+        )[0]
+        boxes = results.boxes.xyxy.cpu().numpy()
+        scores = results.boxes.conf.cpu().numpy()
+        proposals = [
+            Proposal(
+                image_id=kw.get("image_id", "img"),
+                bbox=boxes[i],
+                score=float(scores[i]),
+                class_name="object",  # class-agnostic until prompt modes are wired
+            )
+            for i in range(len(boxes))
+        ]
+        return limit_top_k(proposals, self.top_k)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"YOLOE26({self.checkpoint})"
 
 
 class _YOLOBackbone:

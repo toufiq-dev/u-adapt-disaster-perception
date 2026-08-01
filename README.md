@@ -10,17 +10,16 @@ Open-vocabulary object detectors (Grounding DINO, OWL-ViT, YOLO-World, YOLO11) c
 
 **RQ1 (primary):** Can a lightweight post-hoc adapter improve open-vocabulary detection under 1/3/5-shot cross-domain disaster conditions by dynamically weighting text and visual prompts based on uncertainty — with zero backbone gradient steps?
 
-Supporting questions: **RQ2** how much of the zero-shot-to-transfer gap (LADD +31.2 pp, D-Fire +38.1 pp) can U-ADAPT recover (Gap Recovery)? **RQ3** does the gating mechanism transfer across disaster domains (Mode A as the primary transfer test)? **RQ4** does it improve reliability (ECE, Brier, uncertainty AUROC)? **RQ5** is the relative gain backbone-agnostic?
+Supporting questions: **RQ2** how much of the zero-shot-to-transfer gap (LADD +31.2 pp, D-Fire +38.1 pp) can U-ADAPT recover (Gap Recovery)? **RQ3** does the gating mechanism transfer across disaster domains (Mode A as the primary transfer test)? **RQ4** does it improve reliability (ECE, Brier, uncertainty AUROC)? **RQ5** is the relative gain backbone-agnostic? (**Pre-registered numeric definition:** relative improvement over its own zero-shot baseline within a factor of 2× across all tested backbones, evaluated per dataset.)
 
 ## Main Modes
 
 | Mode | Extra data beyond k support | Backbone gradients | Status | Description |
 |------|----------------------------|-------------------|--------|-------------|
 | **A** | None | None | **Primary — strict few-shot, training-free** | Analytic gating rule `w = σ(−α·σ̃²_visual + β·σ̃²_text + γ·ã_visual)` with **fixed** coefficients α = β = γ = 1 and temperature **T = 1**. All inputs are normalized uncertainty proxies derived from frozen feature statistics. |
-| **B** | 20 labeled boxes per class (calibration) | None (frozen backbone) | Secondary — lightweight calibration, reported separately | **Logistic-regression gate (6 params, primary claim)** or small MLP (5→128→1, ≈650 params, dropout p=0.3, L2, early stopping) trained on cached features; MC Dropout with T = 10 passes for score variances. |
-| **C** | Source-domain episodic simulation (COCO/LVIS) | None (frozen backbone) | **Exploratory** — source-domain transfer | Gating coefficients or MLP pre-trained on a source domain, frozen during target evaluation. If learned coefficients outperform defaults, this suggests domain-invariant uncertainty weighting. |
+| **B** | 20 labeled boxes per class (calibration) | None (frozen backbone) | Secondary — lightweight calibration, reported separately | **Logistic-regression gate (6 params, primary claim)** or small MLP (5→128→1, ≈900 params, dropout p=0.3, L2, early stopping) trained on cached features; MC Dropout with T = 10 passes for score variances. Gate init is **random by default**; a **COCO/LVIS-pretrained initialization ablation** (the former Mode C, proposal §5.4.3) is reported as an ablation within Mode B. |
 
-Mode A results are the headline few-shot claim; Mode B results are reported separately and never conflated with Mode A.
+Mode A results are the headline few-shot claim; Mode B results (including the COCO/LVIS-pretrained init ablation) are reported separately and never conflated with Mode A.
 
 ## Primary Datasets
 
@@ -37,13 +36,14 @@ See [`docs/datasets.md`](docs/datasets.md) for details and the pre-registered ma
 
 - **Grounding DINO Swin-T** (Apache-2.0) — primary backbone for all modes and both primary datasets.
 
-## Fallback Backbones
+## Fallback / Ablation Backbones
 
-- **OWL-ViT** (google/owlvit-base-patch32, Apache-2.0)
-- **YOLO-World-small** (ultralytics, AGPL-3.0 — see `docs/licenses.md`)
-- **YOLO11-small** (ultralytics, AGPL-3.0 — see `docs/licenses.md`)
+- **OWL-ViT** (google/owlvit-base-patch32, Apache-2.0) — cross-backbone ablation (RQ5)
+- **YOLOE26** (ultralytics, license TBD — see `docs/licenses.md`) — cross-backbone ablation (proposal §7.3; checkpoint verified in Milestone 1)
+- **YOLO-World-small** (ultralytics, AGPL-3.0 — see `docs/licenses.md`) — Colab-friendly fallback
+- **YOLO11-small** (ultralytics, AGPL-3.0 — see `docs/licenses.md`) — Colab-friendly fallback
 
-Fallbacks are used only if Grounding DINO Swin-T exceeds Colab T4 memory/time budgets in the pilot (notebook `00_pilot_colab_memory.ipynb`), and as cross-backbone ablations (RQ5).
+Fallbacks are used only if Grounding DINO Swin-T exceeds Colab T4 memory/time budgets in the pilot (notebook `00_pilot_colab_memory.ipynb`); OWL-ViT and YOLOE26 are the pre-registered cross-backbone ablations (RQ5).
 
 ## Compute Constraint: Google Colab T4 Feasibility
 
@@ -66,14 +66,14 @@ u-adapt-disaster-perception/
 ├── pyproject.toml
 ├── configs/
 │   ├── datasets/          # LADD, D-Fire, RescueNet, FloodNet+ (classes, splits, mask->box rules)
-│   ├── models/            # backbone definitions (GDINO Swin-T, OWL-ViT, YOLO-World, YOLO11)
-│   └── modes/             # Mode A / B / C experiment configurations
+│   ├── models/            # backbone definitions (GDINO Swin-T, OWL-ViT, YOLOE26, YOLO-World, YOLO11)
+│   └── modes/             # Mode A / B experiment configurations (B incl. COCO/LVIS init ablation)
 ├── data/
 │   ├── README.md
 │   ├── download_scripts/  # downloaders + checksums (no raw data in git)
 │   └── mask_to_box/       # pre-registered segmentation-mask -> box filtering
 ├── src/uadapt/
-│   ├── models/            # backbone loader (GDINO, OWL-ViT, YOLO)
+│   ├── models/            # backbone loader (GDINO, OWL-ViT, YOLOE26, YOLO)
 │   ├── features/          # feature extraction + caching engine
 │   ├── prototypes/        # text / visual prototype construction
 │   ├── fusion/            # Mode A analytic gate, Mode B logreg / MLP gates

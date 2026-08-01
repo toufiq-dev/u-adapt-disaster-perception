@@ -1,0 +1,13 @@
+# YOLOE26 — cross-backbone ablation (proposal §5 Phase 1, §7.3, §9)
+# YOLOE26 (based on YOLO26) offers text, visual, and prompt-free inference modes.
+# NOTE: checkpoint + license TBD — verify availability (ultralytics) in
+# Milestone 1 (docs/licenses.md, issue #1) before any use.
+name: yolo_e26
+framework: ultralytics
+checkpoint: TBD        # e.g. yoloe26s.pt / yoloe26l.pt — verify in Milestone 1
+license: TBD           # verify in Milestone 1 (issue #1) — see docs/licenses.md
+inference:
+  conf: 0.05
+  device: cuda
+  top_k: 100
+feature_source: detector_internal

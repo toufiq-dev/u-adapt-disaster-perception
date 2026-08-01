@@ -5,6 +5,7 @@ Covers the frozen rules (docs/pre_registration.md §6):
   * maximum box area < 50% of image area
   * aspect ratio within 1:10 .. 10:1
   * pure stuff classes excluded
+  * minimum valid boxes per class (>= 10) for evaluation
   * COCO-style JSON output
 
 Masks are written as .npy so the tests run without cv2/scipy image I/O.
@@ -18,6 +19,7 @@ from data.mask_to_box.filter import (
     MAX_BOX_AREA_FRACTION,
     MIN_ASPECT,
     MIN_BOX_AREA_PX2,
+    MIN_VALID_BOXES_PER_CLASS,
     build_class_lookup,
     connected_components_to_boxes,
     filter_boxes,
@@ -71,6 +73,7 @@ def test_constants_frozen():
     assert MAX_BOX_AREA_FRACTION == 0.5
     assert MIN_ASPECT == pytest.approx(1 / 10)
     assert MAX_ASPECT == 10.0
+    assert MIN_VALID_BOXES_PER_CLASS == 10
 
 
 def test_connected_components_and_stuff_class_exclusion(tmp_path):
@@ -89,7 +92,7 @@ def test_connected_components_and_stuff_class_exclusion(tmp_path):
     lookup = build_class_lookup(cfg)
     mask_path = _write_mask(tmp_path, mask)
 
-    coco = masks_to_coco([mask_path], [mask_path], [(IMG_H, IMG_W)], lookup)
+    coco = masks_to_coco([mask_path], [mask_path], [(IMG_H, IMG_W)], lookup, min_valid_boxes=1)
 
     names = {c["name"] for c in coco["categories"]}
     assert names == {"building"}  # road (stuff) excluded
@@ -111,11 +114,43 @@ def test_masks_to_coco_json_structure(tmp_path):
     lookup = build_class_lookup(cfg)
     mask_path = _write_mask(tmp_path, mask)
 
-    coco = masks_to_coco([mask_path], [mask_path], [(200, 200)], lookup)
+    coco = masks_to_coco([mask_path], [mask_path], [(200, 200)], lookup, min_valid_boxes=1)
     assert set(coco.keys()) == {"info", "images", "annotations", "categories"}
     assert coco["images"][0]["height"] == 200
     assert coco["categories"][0]["region_level"] is True  # flagged region-level
     assert coco["info"]["rules"]["min_area_px2"] == 32.0
+
+
+def test_min_valid_boxes_rule(tmp_path):
+    # Class with < 10 valid boxes is excluded and reported (pre-registered);
+    # a retained class with 0 boxes (never appears) is also reported.
+    mask = np.zeros((IMG_H, IMG_W), dtype=np.uint8)
+    mask[100:140, 100:140] = 1  # building: 1 box (< 10)
+    cfg = {
+        "classes": {
+            "building": {"id": 1, "retained": True, "type": "object_like"},
+            "pool": {"id": 5, "retained": True, "type": "object_like"},  # 0 boxes
+            "water": {"id": 10, "retained": False, "type": "stuff"},      # not retained
+        }
+    }
+    lookup = build_class_lookup(cfg)
+    mask_path = _write_mask(tmp_path, mask)
+
+    coco = masks_to_coco([mask_path], [mask_path], [(IMG_H, IMG_W)], lookup)
+    assert coco["categories"] == []  # dropped below min_valid_boxes
+    assert coco["annotations"] == []
+    assert coco["info"]["rules"]["min_valid_boxes_per_class"] == 10
+    # Both retained classes reported; stuff class (water) never reported.
+    assert coco["info"]["excluded_classes_below_min_valid"] == ["building", "pool"]
+
+    # With >= 10 boxes the class is kept.
+    mask10 = np.zeros((IMG_H, IMG_W), dtype=np.uint8)
+    for i in range(10):
+        mask10[10 * i : 10 * i + 8, 10 : 10 + 8] = 1
+    mask10_path = _write_mask(tmp_path, mask10, name="m10.npy")
+    coco10 = masks_to_coco([mask10_path], [mask10_path], [(IMG_H, IMG_W)], lookup)
+    assert [c["name"] for c in coco10["categories"]] == ["building"]
+    assert len(coco10["annotations"]) == 10
 
 
 def test_shape_mismatch_raises(tmp_path):

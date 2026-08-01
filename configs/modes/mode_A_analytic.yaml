@@ -22,3 +22,6 @@ ablations:
     no_visual_uncertainty: { alpha: 0, beta: 1, gamma: 1 }
     no_text_uncertainty: { alpha: 1, beta: 0, gamma: 1 }
     no_affinity: { alpha: 1, beta: 1, gamma: 0 }
+    visual_uncertainty_only: { alpha: 1, beta: 0, gamma: 0 }
+    text_uncertainty_only: { alpha: 0, beta: 1, gamma: 0 }
+    affinity_only: { alpha: 0, beta: 0, gamma: 1 }

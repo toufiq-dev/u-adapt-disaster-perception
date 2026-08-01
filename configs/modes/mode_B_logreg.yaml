@@ -5,6 +5,8 @@ mode: B
 description: lightweight calibration with logistic-regression gate on frozen cached features
 gate: logistic_regression
 primary_claim: true
+initialization:
+  random: true            # default init; COCO/LVIS-pretrained init is the former Mode C ablation (mode_B_coco_lvis_init.yaml)
 calibration:
   boxes_per_class: 20      # 20 labeled boxes per class (target-domain training split)
   disjoint_from_support: true

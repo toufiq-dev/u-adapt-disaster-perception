@@ -1,9 +1,11 @@
-# Mode B — SECUNDARY variant: gating MLP (5 -> 128 -> 1, ~650 params)
+# Mode B — SECONDARY variant: gating MLP (5 -> 128 -> 1, ~900 params)
 # Reported for comparison; logistic-regression gate is the primary Mode B claim.
 mode: B
 description: lightweight calibration with small gating MLP on frozen cached features
 gate: mlp
 primary_claim: false
+initialization:
+  random: true            # default init; COCO/LVIS-pretrained init is the former Mode C ablation (mode_B_coco_lvis_init.yaml)
 mlp:
   hidden_dim: 128
   dropout_p: 0.3

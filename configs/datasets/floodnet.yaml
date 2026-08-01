@@ -19,6 +19,7 @@ classes:
   grass:                { id: 9, type: stuff,               retained: false }
 
 retained_classes: [building-flooded, building-non-flooded, road-flooded, road-non-flooded, vehicle, pool]
+min_valid_boxes: 10      # classes below this box count are excluded from evaluation (pre-registered)
 
 splits:
   train: data/raw/floodnet/train

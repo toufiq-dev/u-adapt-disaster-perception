@@ -1,6 +1,6 @@
 """Mode B — gating MLP (SECONDARY variant; logistic regression is primary).
 
-Small MLP 5 -> 128 -> 1 (~650 parameters) trained on the calibration set
+Small MLP 5 -> 128 -> 1 (~900 parameters) trained on the calibration set
 (20 boxes/class) with:
 
   * ReLU hidden activation, dropout p=0.3 during training only,
