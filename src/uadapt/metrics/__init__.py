@@ -4,6 +4,8 @@ from .calibration_metrics import brier_score, ece, reliability_table, uncertaint
 from .detection_metrics import (
     compute_ap,
     compute_map50,
+    compute_map50_95,
+    compute_per_class_ap,
     gap_recovery,
     proposal_recall,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "uncertainty_auroc",
     "compute_ap",
     "compute_map50",
+    "compute_map50_95",
+    "compute_per_class_ap",
     "gap_recovery",
     "proposal_recall",
     "d1_text_uncertainty_accuracy",

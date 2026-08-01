@@ -12,6 +12,8 @@ from uadapt.metrics.calibration_metrics import (
 from uadapt.metrics.detection_metrics import (
     compute_ap,
     compute_map50,
+    compute_map50_95,
+    compute_per_class_ap,
     gap_recovery,
     proposal_recall,
 )
@@ -50,6 +52,45 @@ def test_compute_map50_missed_detection():
     preds = []  # no predictions -> 0.0
     gts = [{"image_id": "img0", "class": "fire", "bbox": [0, 0, 10, 10]}]
     assert compute_map50(preds, gts) == 0.0
+
+
+def test_compute_map50_95_perfect():
+    # Perfect box at IoU 1.0 -> AP = 1.0 at every threshold -> mAP50:95 = 1.0
+    preds = [
+        {"image_id": "img0", "class": "fire", "score": 0.9, "bbox": [0, 0, 10, 10]}
+    ]
+    gts = [{"image_id": "img0", "class": "fire", "bbox": [0, 0, 10, 10]}]
+    assert compute_map50_95(preds, gts) == pytest.approx(1.0)
+
+
+def test_compute_map50_95_imperfect_box():
+    # Box with IoU 0.81 vs GT: passes thresholds <= 0.8 (7 of 10), AP = 1.0
+    # there and 0.0 above -> mAP50:95 = 0.7. Also verifies mAP50 == 1.0.
+    preds = [
+        {"image_id": "img0", "class": "fire", "score": 0.9, "bbox": [0, 0, 9, 9]}
+    ]
+    gts = [{"image_id": "img0", "class": "fire", "bbox": [0, 0, 10, 10]}]
+    assert compute_map50(preds, gts) == pytest.approx(1.0)
+    assert compute_map50_95(preds, gts) == pytest.approx(0.7)
+
+
+def test_compute_map50_95_empty():
+    assert compute_map50_95([], []) == 0.0
+
+
+def test_compute_per_class_ap():
+    # Two classes: one detected perfectly (AP 1.0), one missed (AP 0.0).
+    preds = [
+        {"image_id": "img0", "class": "fire", "score": 0.9, "bbox": [0, 0, 10, 10]}
+    ]
+    gts = [
+        {"image_id": "img0", "class": "fire", "bbox": [0, 0, 10, 10]},
+        {"image_id": "img0", "class": "smoke", "bbox": [0, 0, 10, 10]},
+    ]
+    per_class = compute_per_class_ap(preds, gts)
+    assert per_class["fire"] == pytest.approx(1.0)
+    assert per_class["smoke"] == pytest.approx(0.0)
+    assert set(per_class) == {"fire", "smoke"}
 
 
 def test_proposal_recall_ceiling():

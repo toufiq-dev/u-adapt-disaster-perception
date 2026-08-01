@@ -1,4 +1,4 @@
-"""Detection metrics: mAP50 (COCO-style), Gap Recovery, proposal recall.
+"""Detection metrics: mAP50, mAP50:95, per-class AP, Gap Recovery, recall.
 
 Prediction/ground-truth schemas (shared by scripts/04_evaluate.py and tests):
 
@@ -6,6 +6,10 @@ Prediction/ground-truth schemas (shared by scripts/04_evaluate.py and tests):
         {"image_id": str, "class": str, "score": float, "bbox": [x1, y1, x2, y2]}
     gts: list of dicts per image::
         {"image_id": str, "class": str, "bbox": [x1, y1, x2, y2]}
+
+Implemented per proposal §7.4: mAP50 (primary), mAP50:95 (where feasible),
+and per-class AP. All use COCO-style 101-point recall interpolation with
+per-image greedy assignment (each GT box matched to at most one prediction).
 """
 
 from __future__ import annotations
@@ -52,11 +56,17 @@ def compute_ap(sorted_scores: np.ndarray, tps: np.ndarray, fps: np.ndarray) -> f
     return float(ap)
 
 
-def compute_map50(preds: Sequence[Dict], gts: Sequence[Dict], iou_threshold: float = 0.5) -> float:
-    """COCO-style mAP@IoU=0.5, per-class AP averaged over classes.
+def _per_class_ap(
+    preds: Sequence[Dict],
+    gts: Sequence[Dict],
+    iou_threshold: float,
+) -> Dict[str, float]:
+    """Per-class COCO-style AP at a fixed IoU threshold.
 
     Greedy per-image assignment: each ground-truth box is matched to at most
-    one prediction (sorted by score) with IoU >= threshold.
+    one prediction (sorted by score) with IoU >= threshold. The returned map
+    covers ALL classes (union of prediction and ground-truth classes); a class
+    present in GT with zero detections contributes AP = 0.0.
     """
     # Group ground truths by (image_id, class)
     gt_by_img: Dict[str, Dict[str, List[np.ndarray]]] = {}
@@ -76,11 +86,11 @@ def compute_map50(preds: Sequence[Dict], gts: Sequence[Dict], iou_threshold: flo
     gt_classes = {g["class"] for g in gts}
     all_classes = sorted(set(pred_by_class) | gt_classes)
 
-    aps: List[float] = []
+    aps: Dict[str, float] = {}
     for cls in all_classes:
         ps = pred_by_class.get(cls, [])
         if not ps:
-            aps.append(0.0)
+            aps[cls] = 0.0
             continue
         ps = sorted(ps, key=lambda p: p["score"], reverse=True)
         tps: List[bool] = []
@@ -97,10 +107,44 @@ def compute_map50(preds: Sequence[Dict], gts: Sequence[Dict], iou_threshold: flo
             tps.append(matched)
             fps.append(not matched)
         scores = np.asarray([p["score"] for p in ps], dtype=float)
-        ap = compute_ap(scores, np.asarray(tps, dtype=bool), np.asarray(fps, dtype=bool))
-        aps.append(ap)
+        aps[cls] = compute_ap(
+            scores, np.asarray(tps, dtype=bool), np.asarray(fps, dtype=bool)
+        )
+    return aps
 
-    return float(np.mean(aps)) if aps else 0.0
+
+def compute_map50(preds: Sequence[Dict], gts: Sequence[Dict], iou_threshold: float = 0.5) -> float:
+    """COCO-style mAP@IoU=0.5, per-class AP averaged over classes."""
+    aps = _per_class_ap(preds, gts, iou_threshold)
+    return float(np.mean(list(aps.values()))) if aps else 0.0
+
+
+def compute_map50_95(preds: Sequence[Dict], gts: Sequence[Dict]) -> float:
+    """COCO-style mAP averaged over IoU thresholds 0.5:0.05:0.95 (10 values).
+
+    Proposal §7.4: mAP50:95 "where feasible". Per-class AP is averaged over
+    the 10 IoU thresholds, then over classes (equivalent to the grand mean
+    over (class, threshold) pairs since every threshold uses the same class
+    set).
+    """
+    iou_thresholds = np.linspace(0.5, 0.95, 10)  # 0.5, 0.55, ..., 0.95
+    maps = [
+        compute_map50(preds, gts, iou_threshold=float(t)) for t in iou_thresholds
+    ]
+    return float(np.mean(maps)) if maps else 0.0
+
+
+def compute_per_class_ap(
+    preds: Sequence[Dict],
+    gts: Sequence[Dict],
+    iou_threshold: float = 0.5,
+) -> Dict[str, float]:
+    """Per-class COCO-style AP at a fixed IoU threshold (proposal §7.4).
+
+    Returns {class: AP} over the union of prediction and ground-truth classes;
+    classes in GT with no detections are kept with AP = 0.0.
+    """
+    return _per_class_ap(preds, gts, iou_threshold)
 
 
 def gap_recovery(

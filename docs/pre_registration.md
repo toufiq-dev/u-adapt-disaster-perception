@@ -164,8 +164,12 @@ S_final = (1 - w) * S_text + w * S_visual
 * Mode B: T optimized on the calibration split (NLL). Mode B (COCO/LVIS
   pretrained init): T calibrated on the target 20-box-per-class set
   (source-domain temperature is not carried over).
-* Reported metrics: **ECE (15 bins)**, reliability diagrams, **Brier score**,
-  **uncertainty AUROC**.
+* Reported detection metrics (proposal §7.4): **mAP50** (primary),
+  **mAP50:95** (where feasible), and **per-class AP** (implemented in
+  `src/uadapt/metrics/detection_metrics.py`); gap recovery and proposal
+  recall (ceiling) are computed as defined in §9.
+* Reported calibration metrics: **ECE (15 bins)**, reliability diagrams,
+  **Brier score**, **uncertainty AUROC**.
 
 ## 8. Baselines (frozen)
 

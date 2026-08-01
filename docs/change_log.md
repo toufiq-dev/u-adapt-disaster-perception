@@ -53,3 +53,14 @@ section of `docs/pre_registration.md`.
   - YOLOE26 license field fixed in `configs/models/yolo_e26.yaml`:
     `Apache-2.0` → `TBD` (unverified, consistent with `docs/licenses.md` and
     README; issue #1).
+- **Detection metrics completed (proposal §7.4):** added `compute_map50_95`
+  (COCO-style IoU thresholds 0.5:0.05:0.95) and `compute_per_class_ap` to
+  `src/uadapt/metrics/detection_metrics.py` (refactored shared per-class AP
+  core `_per_class_ap`); exported via `src/uadapt/metrics/__init__.py`;
+  reported by `scripts/04_evaluate.py` (`mAP50_95`, `per_class_AP`); unit
+  tests added in `tests/test_metrics.py`; pre-registration §7 updated.
+- **Mode A ablation-variant tests added** in `tests/test_mode_a_gate.py`:
+  config-driven coverage of all 7 pre-registered coefficient variants from
+  `configs/modes/mode_A_analytic.yaml` (Full + 6 ablations) — config
+  exposure, per-variant logit sign semantics, (0,1) weight bounds, and
+  ModeAGate/function equivalence (proposal §8 / pre-registration §2).

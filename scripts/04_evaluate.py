@@ -8,8 +8,9 @@ Evaluates, on the test split:
   * naive averaging baseline (T-Rex2-style w = 0.5)
   * U-ADAPT Mode A (and Mode B / C when fused scores are provided)
 
-Metrics reported: mAP50, Gap Recovery, ECE (15 bins), Brier score,
-uncertainty AUROC, proposal recall (ceiling), and diagnostics D1-D5.
+Metrics reported: mAP50, mAP50:95, per-class AP, Gap Recovery, ECE (15
+bins), Brier score, uncertainty AUROC, proposal recall (ceiling), and
+diagnostics D1-D5.
 
 Usage:
     python scripts/04_evaluate.py \
@@ -64,7 +65,13 @@ def main() -> None:
     args = parser.parse_args()
 
     from uadapt.metrics.calibration_metrics import brier_score, ece, uncertainty_auroc
-    from uadapt.metrics.detection_metrics import compute_map50, gap_recovery, proposal_recall
+    from uadapt.metrics.detection_metrics import (
+        compute_map50,
+        compute_map50_95,
+        compute_per_class_ap,
+        gap_recovery,
+        proposal_recall,
+    )
 
     preds = load_json(args.predictions)
     gts = _coco_to_gt(load_json(args.ground_truth))
@@ -75,6 +82,8 @@ def main() -> None:
             p["score"] = p["fused_score"]
 
     map50 = compute_map50(preds, gts)
+    map50_95 = compute_map50_95(preds, gts)
+    per_class_ap = compute_per_class_ap(preds, gts)
     recall = proposal_recall(preds, gts)
     confs = np.asarray([p["score"] for p in preds], dtype=float)
     # Correctness needs GT matching; simplified here as proposal-level IoU.
@@ -82,6 +91,8 @@ def main() -> None:
 
     results = {
         "mAP50": map50,
+        "mAP50_95": map50_95,
+        "per_class_AP": per_class_ap,
         "proposal_recall_ceiling": recall,
         "ECE_15bin": ece(confs, correct),
         "brier": brier_score(confs, correct),
