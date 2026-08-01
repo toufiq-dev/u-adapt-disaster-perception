@@ -4,8 +4,10 @@ Mode A (training-free proxy uncertainty)
   * sigma^2_text    : mean pairwise cosine distance across the M=20 prompt
                       template embeddings (per class).
   * sigma^2_visual  : mean pairwise cosine distance across the k support
-                      features; zero for k=1 (no observed dispersion —
-                      maximum-likelihood treatment of a degenerate sample).
+                      features; for k=1 the configured k1 prior is returned
+                      (default 0.0 = maximum-likelihood treatment of a
+                      degenerate sample; pre-registered ablation 0.5 =
+                      max-entropy prior).
   * a_visual        : per-box visual affinity (1 + cos)/2 in [0, 1].
 
 Mode B (learned MC Dropout)
@@ -46,10 +48,20 @@ def normalized_text_variance(prompt_embeddings: np.ndarray) -> float:
     return mean_pairwise_cosine_distance(prompt_embeddings)
 
 
-def normalized_visual_variance(support_features: np.ndarray) -> float:
-    """Raw visual uncertainty across k support features; 0.0 for k=1
-    (pre-registered: no dispersion to estimate from a single exemplar)."""
-    return mean_pairwise_cosine_distance(support_features)
+def normalized_visual_variance(
+    support_features: np.ndarray, k1_prior: float = 0.0
+) -> float:
+    """Raw visual uncertainty across k support features.
+
+    k=1 (single exemplar): returns ``k1_prior`` instead of estimating
+    dispersion. Default 0.0 is the pre-registered maximum-likelihood treatment
+    of a degenerate sample; the max-entropy-prior ablation (config
+    ``k1_max_entropy_prior: 0.5``, pre-registration §2) passes 0.5.
+    """
+    features = np.asarray(support_features, dtype=np.float64)
+    if len(features) < 2:
+        return float(k1_prior)
+    return mean_pairwise_cosine_distance(features)
 
 
 def visual_affinity(box_feature: np.ndarray, prototype: np.ndarray) -> float:

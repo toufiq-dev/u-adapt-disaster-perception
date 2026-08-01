@@ -128,6 +128,43 @@ def test_k1_visual_variance_is_zero():
     assert normalized_visual_variance(three) > 0.0
 
 
+def test_k1_max_entropy_prior_ablation_config():
+    """The config must define the k=1 ablations: default zero and the
+    max-entropy-prior ablation value 0.5 (pre-registration §2)."""
+    cfg = _load_mode_a_config()
+    ablations = cfg["ablations"]
+    assert ablations["k1_visual_variance"] == "zero"
+    assert ablations["k1_max_entropy_prior"] == 0.5
+
+
+def test_k1_max_entropy_prior_substitutes_zero():
+    # Default: k=1 -> 0.0 (maximum-likelihood degenerate-sample treatment)
+    single = np.random.default_rng(0).normal(size=(1, 64))
+    assert normalized_visual_variance(single) == 0.0
+    # Ablation: k=1 with max-entropy prior -> 0.5
+    assert normalized_visual_variance(single, k1_prior=0.5) == pytest.approx(0.5)
+    # An explicit zero prior is identical to the default
+    assert normalized_visual_variance(single, k1_prior=0.0) == 0.0
+
+
+def test_k1_prior_does_not_affect_k_ge_2():
+    # k>=2 has real dispersion; the k1 prior must not change the estimate
+    three = np.random.default_rng(0).normal(size=(3, 64))
+    assert normalized_visual_variance(three, k1_prior=0.5) == pytest.approx(
+        normalized_visual_variance(three)
+    )
+    assert normalized_visual_variance(three, k1_prior=0.5) > 0.0
+
+
+def test_k1_prior_shifts_gate_weight():
+    # Higher visual variance (0.5 prior vs 0.0 default) lowers the gate's
+    # weight on the visual branch (alpha term is negative).
+    gate = ModeAGate()
+    w_default = gate.weight(0.2, 0.0, 0.5)
+    w_prior = gate.weight(0.2, 0.5, 0.5)
+    assert w_prior < w_default
+
+
 def test_predict_batch_matches_scalar():
     gate = ModeAGate()
     inputs = [
