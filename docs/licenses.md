@@ -11,7 +11,7 @@ replaced or dropped and logged in [`change_log.md`](change_log.md).
 
 | Model | License | Status | Notes |
 |-------|---------|--------|-------|
-| Grounding DINO (Swin-T) | Apache-2.0 | **Confirmed (proposal §14)** | Permits research use **and feature caching** (pre-registered) |
+| Grounding DINO (Swin-T) | Apache-2.0 | **Confirmed (proposal: "Dataset and model licenses" section)** | Permits research use **and feature caching** (pre-registered) |
 | OWL-ViT (google/owlvit-base-patch32) | Apache-2.0 | To verify (issue #1) | — |
 | YOLO-World (ultralytics) | AGPL-3.0 | To verify (issue #1) | ⚠️ AGPL — check thesis implications if used |
 | YOLO11 (ultralytics) | AGPL-3.0 | To verify (issue #1) | ⚠️ AGPL — check thesis implications if used |

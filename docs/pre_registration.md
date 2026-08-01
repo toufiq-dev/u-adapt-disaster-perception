@@ -6,9 +6,12 @@ entry in [`change_log.md`](change_log.md) with justification.
 
 > Snapshot date: 2026-08-01 (repository bootstrap, synced to proposal
 > Revision 3). Source of truth: the thesis proposal (§5 Method, §7.6
-> Diagnostics, §11 Timeline). Mode C no longer exists as a separate mode —
-> source-domain meta-training is folded into Mode B as a gate-initialization
-> ablation (proposal §5.4.3).
+> Statistical Testing Plan — which also contains the D1–D5 diagnostics —
+> §11 Timeline). Note: the proposal's §7 has no §7.5; it jumps from §7.4
+> Metrics to §7.6 Statistical Testing Plan, and the D1–D5 diagnostics text
+> is contained within §7.6 (the proposal itself cites "D5 (§7.6)"). Mode C
+> no longer exists as a separate mode — source-domain meta-training is
+> folded into Mode B as a gate-initialization ablation (proposal §5.4.3).
 
 ## 1. Evaluation Modes (frozen)
 
@@ -166,8 +169,8 @@ S_final = (1 - w) * S_text + w * S_visual
   (source-domain temperature is not carried over).
 * Reported detection metrics (proposal §7.4): **mAP50** (primary),
   **mAP50:95** (where feasible), and **per-class AP** (implemented in
-  `src/uadapt/metrics/detection_metrics.py`); gap recovery and proposal
-  recall (ceiling) are computed as defined in §9.
+  `src/uadapt/metrics/detection_metrics.py`); proposal recall (ceiling) is
+  defined in §8 (Baselines) and gap recovery in §9 (Statistical Testing).
 * Reported calibration metrics: **ECE (15 bins)**, reliability diagrams,
   **Brier score**, **uncertainty AUROC**.
 
@@ -279,7 +282,8 @@ YOLO11-small) are used only if the primary backbone exceeds the budget.
 
 * **Research-ethics exemption:** No institutional ethics approval is required:
   publicly available, de-identified datasets, no human subjects, no
-  personally identifiable information (proposal §Ethics). The exact name and
+  personally identifiable information (proposal "Ethics Statement"). The exact
+  name and
   process of the university's ethics review is confirmed before submission.
 * **License verification is committed** before experiments (see
   [`licenses.md`](licenses.md), issue #1); any restricted dataset/model is
