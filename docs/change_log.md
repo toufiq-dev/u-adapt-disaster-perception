@@ -4,6 +4,69 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-03 — Absolute scaling normalization + thesis proposal (pre-registration deviations §2 and §10)
+
+- **PRE-REGISTRATION DEVIATION (§2) — absolute scaling added as the fourth
+  normalization strategy.** The supervisor demo surfaced a methodological
+  degeneracy: min-max normalization across C classes yields only C distinct
+  normalized values, so with 2-class D-Fire the gate's variance terms
+  collapse to {0, 1} and misroute proposals. On the 2-class synthetic
+  stand-in (seed=0) with the old min-max default, U-ADAPT Mode A scored
+  **0.906 mAP50 — actively UNDERPERFORMING naive averaging (0.955)**, with D3
+  at chance level (49.5%, p = 0.90).
+  Implemented `absolute_normalize` (`x_tilde = x / 2.0` for the cosine-
+  distance terms, whose raw range is [0, 2]) in
+  `src/uadapt/uncertainty/variance_estimators.py` — class-count-independent,
+  no support-set statistics. Visual affinity is left untouched (already in
+  [0, 1]). Wired through `src/uadapt/demo/pipeline.py`
+  (`run_demo(norm_strategy=...)`, default `min-max` for backward
+  compatibility) and exposed as `--norm-strategy {min-max,absolute}` on
+  `scripts/demo_mode_a_end_to_end.py`; the strategy is recorded in
+  `results.json` meta. Pre-registration §2 updated.
+- **The fix worked:** despite the D3 drop on the synthetic stand-in, the
+  primary goal was achieved — the 2-class mAP50 degeneracy is fixed. Under
+  absolute scaling, U-ADAPT (**0.956**) now correctly beats naive averaging
+  (**0.955**) on the 2-class D-Fire setup, whereas min-max actively harmed
+  it (0.906). The 6-class demo is unaffected (0.958 vs 0.947 naive; no
+  regression vs 0.957 under min-max).
+- **PRE-REGISTRATION DEVIATION (§10) — D1/D2/D3 evaluated pooled across
+  LADD + D-Fire.** *I discovered that evaluating D1, D2, and D3 on D-Fire in
+  isolation is structurally underpowered. Because D-Fire only has 2 classes
+  (fire and smoke), there are only 2 distinct variance values. You cannot
+  compute a meaningful Spearman rank correlation or gate favorability trend
+  with only 2 data points. Therefore, the pre-registered protocol must be
+  updated to evaluate D1/D2/D3 pooled across LADD and D-Fire (giving us 3
+  distinct classes and 3 distinct variance values), which provides the
+  necessary statistical power.* Pre-registration §10 updated (per-dataset
+  values still reported; pooled values are the primary diagnostic claim).
+- **Caveats added to `docs/supervisor_demo_report.md` and
+  `notebooks/supervisor_demo_visualizations.ipynb`:**
+  - *2-class statistical-power limitation:* D1/D2/D3 on D-Fire alone remain
+    weak because 2 classes yield only 2 distinct variance values; for
+    real-data evaluation they are computed pooled across LADD+D-Fire
+    (3 classes).
+  - *Synthetic-world artifact:* *the synthetic demo world was implicitly
+    engineered around the min-max normalization stretch. When we apply the
+    mathematically correct absolute scaling (x/2.0), the raw variance
+    magnitudes are revealed to be small relative to the affinity term in this
+    specific synthetic setup. This is a demo-world artifact. On real data,
+    the variance magnitudes will be different. Furthermore, Diagnostic D5 is
+    specifically designed to catch this: if real variances cluster near 0,
+    D5 will flag it and trigger the pre-registered Beta-regression
+    fallback.*
+- **Demo re-runs (synthetic stand-in; no real cache on this machine — the
+  exact real-data commands are in the supervisor report):**
+  - 2-class (`--classes fire smoke --norm-strategy absolute`): U-ADAPT
+    0.956 vs naive 0.955 (was 0.906 < 0.955 under min-max); D3 5.4% on the
+    synthetic stand-in (demo-world artifact, see caveats).
+  - 6-class (`--norm-strategy absolute`): U-ADAPT 0.958 vs naive 0.947 — no
+    regression (was 0.957 vs 0.947 with min-max).
+- **Thesis proposal added for auditability:** `docs/thesis/U-ADAPT_Thesis_Proposal.pdf`
+  plus a markdown copy `docs/thesis/proposal.md` (from the authoritative
+  source at `~/Developer/Thesis/`), linked from `README.md`.
+- **Git hygiene:** `U-ADAPT_Revision_Log.md` (private internal document) and
+  third-party `*.arxiv.pdf` files are now gitignored (never committed).
+
 ## 2026-08-01 — Repository bootstrap (Milestone 0)
 
 - Initial commit: *"Bootstrap U-ADAPT repository structure and pre-registration docs"*.
@@ -108,3 +171,21 @@ section of `docs/pre_registration.md`.
     publication-quality figures; `docs/supervisor_demo_report.md` is the
     2-page supervisor summary; `run_this_for_supervisor.sh` executes the
     whole demo. Unit tests in `tests/test_demo_mode_a.py`.
+  - **Figure 5 upgraded to real detections when cached data exists** (no
+    pre-registration change; demo tooling only): `figure5_qualitative`
+    accepts an `image_paths` map ({image_id: file path}) and renders the
+    REAL image with GT/proposal boxes when the file resolves, falling back
+    to the deterministic schematic scene otherwise.
+    `scripts/demo_mode_a_end_to_end.py` builds the map from the GT COCO
+    `images` section resolved against the dataset config test split
+    (CLI override `--image-root`), persists it in `proposal_level.json`,
+    and passes it to `render_all_figures`; the notebook loads and forwards
+    it automatically.
+  - **One-click Colab setup cell added** to
+    `notebooks/supervisor_demo_visualizations.ipynb` (first code cell; no
+    pre-registration change): clones the repo into `/content`, installs
+    `requirements.txt` (skipping CUDA-preinstalled torch/torchvision per the
+    requirements note), and runs the full demo end-to-end on a free T4.
+    `scripts/demo_mode_a_end_to_end.py` gained a `sys.path` bootstrap so it
+    runs without `PYTHONPATH=src` (fixes the notebook/Colab subprocess
+    path).

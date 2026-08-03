@@ -7,8 +7,9 @@ real cache when available):
     2. text uncertainty         -> normalized_text_variance on template
                                    embeddings (or 0.5 placeholder in real mode)
     3. per-proposal signals     -> s_text, affinity (s_visual), normalized
-                                   variances (min-max across classes), gate
-                                   weight w = sigmoid(-a*vv + b*tv + g*aff)
+                                   variances (min-max or absolute scaling,
+                                   per ``norm_strategy``), gate weight
+                                   w = sigmoid(-a*vv + b*tv + g*aff)
     4. fused scores             -> S = (1-w)*S_text + w*S_visual
     5. baselines                -> raw zero-shot (detector score), text-only
                                    (w=0), visual-only (w=1), naive (w=0.5)
@@ -44,6 +45,8 @@ from uadapt.metrics.diagnostics import (
 )
 from uadapt.prototypes.prototype_builder import build_visual_prototypes
 from uadapt.uncertainty.variance_estimators import (
+    COSINE_DISTANCE_MAX,
+    absolute_normalize,
     min_max_normalize,
     normalized_text_variance,
     visual_affinity,
@@ -91,6 +94,7 @@ def run_demo(
     gamma: float = 1.0,
     zero_shot_reference: Optional[float] = None,
     transfer_reference: Optional[float] = None,
+    norm_strategy: str = "min-max",
 ) -> DemoResults:
     """Run the full Mode A demo on a data source. Returns :class:`DemoResults`.
 
@@ -106,8 +110,16 @@ def run_demo(
         alpha/beta/gamma: analytic gate coefficients (ablation support).
         zero_shot_reference / transfer_reference: optional literature mAP50
             numbers used for the gap-recovery figure (clearly labelled).
+        norm_strategy: how per-class variance terms are scaled to [0, 1]:
+            ``min-max`` (default, support-set statistics; collapses to {0, 1}
+            for C=2 classes) or ``absolute`` (x / 2.0, class-count-
+            independent — fixes the 2-class degeneracy, change_log 2026-08-03).
     """
     classes = list(classes)
+    if norm_strategy not in ("min-max", "absolute"):
+        raise ValueError(
+            f"unknown norm_strategy {norm_strategy!r} (choices: min-max, absolute)"
+        )
     rng = np.random.default_rng(seed)
 
     # --- prototypes + per-class normalized uncertainties --------------------
@@ -123,8 +135,8 @@ def run_demo(
         sigma_text = {c: 0.5 for c in classes}
     sigma_visual = {c: protos[c].sigma_visual for c in classes}
 
-    norm_text = _normalize_class_values(sigma_text, classes)
-    norm_visual = _normalize_class_values(sigma_visual, classes)
+    norm_text = _normalize_class_values(sigma_text, classes, norm_strategy)
+    norm_visual = _normalize_class_values(sigma_visual, classes, norm_strategy)
 
     gate = ModeAGate(alpha=alpha, beta=beta, gamma=gamma)
     gt_by = _index_gt(ground_truth)
@@ -262,6 +274,7 @@ def run_demo(
         "n_ground_truth": len(ground_truth),
         "n_scored_proposals": len(rows),
         "classes": classes,
+        "norm_strategy": norm_strategy,
     }
 
     return DemoResults(
@@ -279,15 +292,36 @@ def run_demo(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _normalize_class_values(values: Dict[str, float], classes: Sequence[str]) -> Dict[str, float]:
+def _normalize_class_values(
+    values: Dict[str, float], classes: Sequence[str], norm_strategy: str = "min-max"
+) -> Dict[str, float]:
+    """Scale per-class variance values to [0, 1].
+
+    ``min-max`` (default) uses support-set statistics and maps C classes to
+    C distinct values (degenerate for C=2: collapse to {0, 1}); ``absolute``
+    divides the raw cosine distance by its fixed max
+    (``COSINE_DISTANCE_MAX`` = 2.0) and is invariant to the class count
+    (fixes the 2-class degeneracy). Note: under absolute scaling a raw
+    ``k1_prior`` of 0.5 (max-entropy ablation) normalizes to 0.25, whereas
+    min-max's constant-value special case maps any uniform input to 0.5 —
+    consistent with the absolute philosophy (0.5 is a real magnitude, not a
+    midpoint), but a behavior difference for k=1 runs.
+    """
     classes = list(classes)
     if not classes:
         return {}
     arr = np.asarray([values[c] for c in classes], dtype=float)
-    if arr.max() - arr.min() < 1e-12:
-        norm = np.full_like(arr, 0.5)
+    if norm_strategy == "absolute":
+        norm = absolute_normalize(arr, scale=COSINE_DISTANCE_MAX)
+    elif norm_strategy == "min-max":
+        if arr.max() - arr.min() < 1e-12:
+            norm = np.full_like(arr, 0.5)
+        else:
+            norm = min_max_normalize(arr)
     else:
-        norm = min_max_normalize(arr)
+        raise ValueError(
+            f"unknown norm_strategy {norm_strategy!r} (choices: min-max, absolute)"
+        )
     return {c: float(norm[i]) for i, c in enumerate(classes)}
 
 

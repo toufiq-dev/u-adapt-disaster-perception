@@ -89,13 +89,23 @@ S_final = (1 - w) * S_text + w * S_visual
 
 * Default coefficients **alpha = beta = gamma = 1**, fixed — **not learned**
   from the target domain.
-* All inputs normalized to [0, 1] (min-max with epsilon 1e-6; normalization
-  strategy is an ablation: none | min-max | percentile rank).
-* `sigma_tilde^2_text` = min-max normalized mean pairwise cosine distance over
-  the M=20 prompt-template ensemble (sensitivity check: M=50 on one subset).
-* `sigma_tilde^2_visual` = min-max normalized mean pairwise cosine distance
-  over the k support features; **zero for k=1** (maximum-likelihood treatment
-  of a degenerate sample). Ablation: replace with maximum-entropy prior 0.5.
+* All inputs normalized to [0, 1]; normalization strategy is an ablation:
+  none | min-max | percentile rank | **absolute** (added 2026-08-03 — see
+  [`change_log.md`](change_log.md)). `a_tilde_visual` is already in [0, 1]
+  and is never re-normalized.
+* **Absolute scaling (deviation, 2026-08-03):** `x_tilde = x / 2.0` for the
+  cosine-distance terms. The raw mean pairwise cosine distance has a fixed
+  range [0, 2] (1 − cos, cos ∈ [−1, 1]), so dividing by 2 maps it to [0, 1]
+  **without support-set statistics** — the normalized value of a class is
+  independent of the class count. This fixes the 2-class degeneracy of
+  min-max, which yields only C distinct normalized values (for C = 2 the
+  variance terms collapse to {0, 1} and misroute the gate).
+* `sigma_tilde^2_text` = normalized mean pairwise cosine distance over the
+  M=20 prompt-template ensemble (sensitivity check: M=50 on one subset);
+  min-max or absolute per the chosen strategy.
+* `sigma_tilde^2_visual` = normalized mean pairwise cosine distance over the
+  k support features; **zero for k=1** (maximum-likelihood treatment of a
+  degenerate sample). Ablation: replace with maximum-entropy prior 0.5.
 * `a_tilde_visual` = per-box visual affinity `(1 + cos(f_box, p_visual)) / 2`.
 * Sigmoid input is bounded in [-1, 2] at alpha=beta=gamma=1; neither modality
   is ever fully suppressed.
@@ -220,6 +230,17 @@ Dropout overhead may not be justified, and this is reported honestly.
   relative improvement ≤ 2), evaluated per dataset.
 
 ## 10. Diagnostics D1–D5 (frozen; computed AFTER main results)
+
+> **Statistical-power update (pre-registration deviation, 2026-08-03 — see
+> [`change_log.md`](change_log.md)):** evaluating D1, D2, and D3 on D-Fire in
+> isolation is **structurally underpowered**. Because D-Fire only has 2
+> classes (fire and smoke), there are only 2 distinct variance values — a
+> meaningful Spearman rank correlation or gate-favorability trend cannot be
+> computed with only 2 data points. The protocol is therefore updated to
+> evaluate **D1/D2/D3 pooled across LADD and D-Fire** (3 distinct classes and
+> 3 distinct variance values), which provides the necessary statistical
+> power. Per-dataset values are still reported, but the pooled values are the
+> primary diagnostic claim.
 
 * **D1** Text uncertainty–accuracy correlation: 10 bins of σ̃²_text vs
   proposal error rate (correct = IoU ≥ 0.5 with same-class GT); Spearman ρ > 0

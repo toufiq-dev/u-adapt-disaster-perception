@@ -26,13 +26,18 @@ Usage:
     # synthetic demo (default, no data required)
     python scripts/demo_mode_a_end_to_end.py --out outputs/supervisor_demo/results.json
 
-    # real cached features (when available after Milestone 1)
+    # real cached features (when available after Milestone 1) — use absolute
+    # scaling for 2-class D-Fire (min-max collapses to {0,1} with C=2 classes)
     python scripts/demo_mode_a_end_to_end.py \
         --cache-dir cached_features \
         --ground-truth data/annotations/dfire_test.json \
-        --dataset-config configs/datasets/dfire.yaml
+        --dataset-config configs/datasets/dfire.yaml \
+        --norm-strategy absolute
 
-Everything is seeded (--seed 0) for full reproducibility.
+Everything is seeded (--seed 0) for full reproducibility. ``--norm-strategy``
+is min-max by default (backward compatible); absolute (x/2.0) is
+class-count-independent and fixes the 2-class degeneracy (see
+docs/change_log.md 2026-08-03).
 """
 
 from __future__ import annotations
@@ -40,9 +45,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
+
+# Bootstrap so ``uadapt`` is importable when this script runs from any CWD
+# (Colab, shell, notebook subprocess) without PYTHONPATH=src.
+_SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("demo_mode_a")
@@ -97,24 +110,66 @@ def _subset_by_image(records, n_images: int, seed: int):
     return [records[i] for i in idx], seen[:n_images]
 
 
+def _coco_image_paths(coco: dict, image_root: Path) -> dict:
+    """Map every usable image key (coco id, file stem, file name) -> file path.
+
+    Cache image ids are filename stems (see 01_extract_and_cache.py); GT
+    image ids may be coco ints (mask->box) or stems (D-Fire). Registering all
+    aliases lets Figure 5 resolve whichever key the proposal uses.
+    """
+    out = {}
+    for img in coco.get("images", []):
+        fname = img.get("file_name")
+        if not fname:
+            continue
+        path = Path(fname)
+        if not path.is_absolute():
+            path = image_root / path
+        out[str(img.get("id"))] = str(path)
+        out[path.stem] = str(path)
+        out[fname] = str(path)
+    return out
+
+
 def _load_real_data(cache_dir: Path, dataset_config: Path, ground_truth: Path,
-                    n_images: int, seed: int):
-    """Load real cached features + COCO GT (when available after Milestone 1)."""
+                    n_images: int, seed: int, image_root: Optional[Path] = None):
+    """Load real cached features + COCO GT (when available after Milestone 1).
+
+    Returns (train, test, gt, classes, embeddings=None, image_paths).
+    ``image_paths`` maps image keys -> image file paths for Figure 5 real
+    detections; it is empty when no images can be resolved.
+    """
     from uadapt.features.cache_engine import load_cache
 
     train = load_cache(cache_dir, split="train")
     test = load_cache(cache_dir, split="test")
     cfg = load_yaml(dataset_config)
     classes = list(cfg.get("retained_classes") or cfg["classes"])
-    gt = _coco_to_gt(load_json(ground_truth))
+    coco = load_json(ground_truth)
+    gt = _coco_to_gt(coco)
     train, _ = _subset_by_image(train, n_images, seed)
     test, _ = _subset_by_image(test, n_images, seed)
+    # Cache image ids are filename stems (01_extract_and_cache.py), while GT
+    # image ids may be sequential coco ints (mask->box). Remap GT ids to the
+    # image stem so the GT filter matches cache records and Figure 5 boxes.
+    id_to_stem = {
+        str(img.get("id")): Path(img["file_name"]).stem
+        for img in coco.get("images", []) if img.get("file_name")
+    }
+    gt = [
+        {**g, "image_id": id_to_stem.get(g["image_id"], g["image_id"])}
+        for g in gt
+    ]
     # Restrict GT to the subset's images.
     test_ids = {r.image_id for r in test}
     gt = [g for g in gt if g["image_id"] in test_ids]
-    logger.info("real cache: %d train / %d test records, %d GT boxes",
-                len(train), len(test), len(gt))
-    return train, test, gt, classes, None
+    root = image_root or Path(cfg.get("splits", {}).get("test", ""))
+    image_paths = _coco_image_paths(coco, root)
+    logger.info(
+        "real cache: %d train / %d test records, %d GT boxes, %d image aliases",
+        len(train), len(test), len(gt), len(image_paths),
+    )
+    return train, test, gt, classes, None, image_paths
 
 
 def _load_synthetic(n_images: int, seed: int, classes):
@@ -123,7 +178,8 @@ def _load_synthetic(n_images: int, seed: int, classes):
     ds = generate_synthetic_dataset(classes=classes, seed=seed, n_test_images=n_images)
     logger.info("synthetic world: %d train / %d test records, %d GT boxes (seed=%d)",
                 len(ds.train_records), len(ds.test_records), len(ds.ground_truth), seed)
-    return ds.train_records, ds.test_records, ds.ground_truth, ds.classes, ds.template_embeddings
+    # Synthetic proposals have no real image files -> empty image_paths.
+    return ds.train_records, ds.test_records, ds.ground_truth, ds.classes, ds.template_embeddings, {}
 
 
 def main() -> None:
@@ -135,6 +191,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-test-images", type=int, default=80, help="subset size (50-100)")
     parser.add_argument("--classes", nargs="*", default=None, help="override class list")
+    parser.add_argument("--norm-strategy", choices=["min-max", "absolute"],
+                        default="min-max",
+                        help="per-class variance scaling: min-max (default; "
+                             "degenerate for 2 classes) or absolute (x/2.0, "
+                             "class-count-independent — use for D-Fire)")
+    parser.add_argument("--image-root", type=Path, default=None,
+                        help="Figure 5 real-detection image dir (default: dataset config test split)")
     parser.add_argument("--out", default="outputs/supervisor_demo/results.json", type=Path)
     parser.add_argument("--proposal-out", default=None, type=Path)
     parser.add_argument("--figures-dir", default=None, type=Path,
@@ -150,12 +213,12 @@ def main() -> None:
         and args.ground_truth is not None
     )
     if use_real:
-        train, test, gt, classes, embeddings = _load_real_data(
+        train, test, gt, classes, embeddings, image_paths = _load_real_data(
             args.cache_dir, args.dataset_config, args.ground_truth,
-            args.n_test_images, args.seed,
+            args.n_test_images, args.seed, image_root=args.image_root,
         )
     else:
-        train, test, gt, classes, embeddings = _load_synthetic(
+        train, test, gt, classes, embeddings, image_paths = _load_synthetic(
             args.n_test_images, args.seed, args.classes
         )
 
@@ -175,6 +238,7 @@ def main() -> None:
         seed=args.seed,
         zero_shot_reference=zero_ref,
         transfer_reference=transfer_ref,
+        norm_strategy=args.norm_strategy,
     )
 
     # Coefficient ablation (Figure 6).
@@ -187,12 +251,14 @@ def main() -> None:
             template_embeddings=embeddings,
             shots=args.shots,
             seed=args.seed,
+            norm_strategy=args.norm_strategy,
             **coeff,
         )
         results.ablation[key] = ab.map50["uadapt_mode_a"]
 
     results.meta["data_source"] = "synthetic" if embeddings is not None else "real"
     results.meta["n_test_images"] = args.n_test_images
+    # run_demo already records ``norm_strategy`` in meta.
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as fh:
@@ -202,7 +268,8 @@ def main() -> None:
     proposal_out = args.proposal_out or (args.out.parent / "proposal_level.json")
     with open(proposal_out, "w") as fh:
         json.dump(
-            {"proposals": results.proposal_level, "ground_truth": list(gt)},
+            {"proposals": results.proposal_level, "ground_truth": list(gt),
+             "image_paths": image_paths},
             fh,
             indent=2,
         )
@@ -215,7 +282,8 @@ def main() -> None:
 
         fig_dir = args.figures_dir or (args.out.parent / "figures")
         saved = render_all_figures(
-            results.to_dict(), results.proposal_level, list(gt), str(fig_dir)
+            results.to_dict(), results.proposal_level, list(gt), str(fig_dir),
+            image_paths=image_paths,
         )
         logger.info("figures -> %s", ", ".join(saved))
 

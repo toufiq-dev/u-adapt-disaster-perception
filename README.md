@@ -81,9 +81,23 @@ u-adapt-disaster-perception/
 │   └── metrics/           # mAP50, Gap Recovery, ECE, Brier, AUROC, diagnostics D1-D5
 ├── scripts/               # 01 extract+cache, 02 prototypes, 03 fusion, 04 evaluate
 ├── notebooks/             # Colab pilot, mask->box inspection, diagnostics
-├── docs/                  # pre_registration, thesis_plan, datasets, licenses, change_log
+├── docs/                  # thesis/, pre_registration, thesis_plan, datasets, licenses, change_log, supervisor_demo_report
 └── tests/                 # unit tests
 ```
+
+## Documentation
+
+- **Thesis proposal** — [PDF](docs/thesis/U-ADAPT_Thesis_Proposal.pdf) ·
+  [markdown source](docs/thesis/proposal.md). The official MSc thesis
+  proposal, kept in-repo for auditability (snapshot synced to
+  pre-registration Revision 3). The private `U-ADAPT_Revision_Log.md`
+  (reviewer responses / revision history) is intentionally **not** committed.
+- [`docs/pre_registration.md`](docs/pre_registration.md) — the frozen experimental protocol.
+- [`docs/change_log.md`](docs/change_log.md) — every pre-registration deviation and pipeline change.
+- [`docs/thesis_plan.md`](docs/thesis_plan.md) — milestone plan.
+- [`docs/datasets.md`](docs/datasets.md) — dataset details and mask-to-box rules.
+- [`docs/licenses.md`](docs/licenses.md) — model and dataset licenses.
+- [`docs/supervisor_demo_report.md`](docs/supervisor_demo_report.md) — 2-page supervisor demo summary (Mode A).
 
 ## Setup Instructions
 

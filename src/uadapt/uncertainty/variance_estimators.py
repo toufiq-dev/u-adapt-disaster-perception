@@ -14,9 +14,12 @@ Mode B (learned MC Dropout)
   * mc_dropout_estimate: T stochastic forward passes with dropout active;
                         returns mean and variance of the score.
 
-All raw variances are normalized to [0, 1] via min-max scaling using
-support-set (or calibration-set) statistics before entering the gate
-(normalization is an ablation: none | min-max | percentile rank).
+All raw variances are normalized to [0, 1] before entering the gate
+(normalization is an ablation: none | min-max | percentile rank | absolute;
+see pre-registration section 2). Min-max uses support-set (or
+calibration-set) statistics; absolute scaling (`x / 2.0`) is
+class-count-independent and is the pre-registered deviation fixing the
+2-class degeneracy (2026-08-03, change_log.md).
 """
 
 from __future__ import annotations
@@ -26,6 +29,10 @@ from typing import Callable, Optional, Sequence, Tuple
 import numpy as np
 
 EPS = 1e-6  # clamp epsilon for normalized variances
+
+# Raw mean pairwise cosine distance (1 - cos, cos in [-1, 1]) ranges in
+# [0, 2]; absolute scaling divides by this constant (class-count-independent).
+COSINE_DISTANCE_MAX = 2.0
 
 
 # ----------------------------------------------------------------------
@@ -84,6 +91,28 @@ def min_max_normalize(
         vmin, vmax = float(values.min()), float(values.max())
     denom = (vmax - vmin) + eps
     return np.clip((values - vmin) / denom, 0.0, 1.0)
+
+
+def absolute_normalize(
+    values: np.ndarray,
+    scale: float = COSINE_DISTANCE_MAX,
+) -> np.ndarray:
+    """Class-count-independent absolute scaling: x_tilde = x / scale.
+
+    For the cosine-distance terms (``sigma^2_text`` / ``sigma^2_visual``) the
+    raw mean pairwise cosine distance has a FIXED range [0, 2]
+    (1 - cos, cos in [-1, 1]), so ``scale=2.0`` maps [0, 2] exactly onto
+    [0, 1] without any support-set statistics.
+
+    Unlike min-max, the normalized value of a class does NOT depend on how
+    many classes are in the set — it is invariant to the class count. This
+    fixes the 2-class degeneracy (D-Fire): min-max across C classes yields
+    only C distinct normalized values, so with C=2 the variance terms
+    collapse to {0, 1} and the D1/D2 diagnostics lose statistical power
+    (pre-registration deviation, change_log.md 2026-08-03).
+    """
+    values = np.asarray(values, dtype=np.float64)
+    return np.clip(values / float(scale), 0.0, 1.0)
 
 
 # ----------------------------------------------------------------------

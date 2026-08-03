@@ -15,6 +15,10 @@ import pytest
 
 from uadapt.demo.pipeline import run_demo
 from uadapt.demo.synthetic_data import generate_synthetic_dataset
+from uadapt.uncertainty.variance_estimators import (
+    absolute_normalize,
+    min_max_normalize,
+)
 
 
 @pytest.fixture(scope="module")
@@ -151,3 +155,130 @@ def test_gap_recovery_payload(results):
     assert "uadapt_map50" in g
     assert "proposal_recall_ceiling" in g
     assert "gap_recovery_vs_ceiling" in g
+
+
+# ---------------------------------------------------------------------------
+# Absolute scaling normalization (2-class degeneracy fix, change_log 2026-08-03)
+# ---------------------------------------------------------------------------
+def test_absolute_normalize_maps_cosine_range_to_unit_interval():
+    # Raw mean pairwise cosine distance ranges over [0, 2] (1 - cos, cos in
+    # [-1, 1]); absolute scaling x/2.0 must map the full range to [0, 1].
+    out = absolute_normalize(np.array([0.0, 1.0, 2.0]))
+    assert out[0] == pytest.approx(0.0)
+    assert out[1] == pytest.approx(0.5)
+    assert out[2] == pytest.approx(1.0)
+    # Slight numerical over/undershoot outside [0, 2] is clipped.
+    clipped = absolute_normalize(np.array([-0.5, 2.5]))
+    assert clipped[0] == pytest.approx(0.0)
+    assert clipped[1] == pytest.approx(1.0)
+
+
+def test_absolute_normalize_class_count_invariant():
+    # The normalized value of a class must NOT depend on how many classes are
+    # in the set (min-max violates this: with C=2 the terms collapse to
+    # {0, 1}, which is the 2-class degeneracy this function fixes).
+    two = absolute_normalize(np.array([0.4, 1.6]))
+    six = absolute_normalize(np.array([0.4, 1.6, 0.9, 0.2, 1.1, 1.8]))
+    assert two[0] == pytest.approx(six[0])   # 0.4 -> 0.2 either way
+    assert two[1] == pytest.approx(six[1])   # 1.6 -> 0.8 either way
+    # For contrast: min-max is NOT class-count-invariant — the same values
+    # normalize differently depending on the set they appear in.
+    assert not np.allclose(
+        min_max_normalize(np.array([0.4, 1.6])),
+        min_max_normalize(np.array([0.4, 1.6, 0.9, 0.2, 1.1, 1.8]))[:2],
+    )
+
+
+def test_run_demo_absolute_fixes_2class_degeneracy():
+    # On the 2-class (fire/smoke) stand-in, min-max actively hurts the gate
+    # (U-ADAPT < naive averaging), while absolute scaling restores it.
+    ds = generate_synthetic_dataset(classes=["fire", "smoke"], seed=0,
+                                    n_test_images=40)
+    mm = run_demo(ds.train_records, ds.test_records, ds.ground_truth,
+                  ds.classes, template_embeddings=ds.template_embeddings,
+                  shots=5, seed=0, norm_strategy="min-max")
+    ab = run_demo(ds.train_records, ds.test_records, ds.ground_truth,
+                  ds.classes, template_embeddings=ds.template_embeddings,
+                  shots=5, seed=0, norm_strategy="absolute")
+    # The fix: under absolute scaling U-ADAPT no longer underperforms naive
+    # averaging, and it beats the (degenerate) min-max run.
+    assert ab.map50["uadapt_mode_a"] >= ab.map50["naive_average"] - 1e-9
+    assert ab.map50["uadapt_mode_a"] > mm.map50["uadapt_mode_a"]
+    # The two strategies produce genuinely different gate behavior.
+    w_ab = np.asarray([p["w"] for p in ab.proposal_level])
+    w_mm = np.asarray([p["w"] for p in mm.proposal_level])
+    assert w_ab.shape == w_mm.shape
+    assert not np.allclose(w_ab, w_mm)
+
+
+def test_default_norm_strategy_is_min_max(results):
+    # Backward compatibility: the default stays min-max and is recorded.
+    assert results.meta["norm_strategy"] == "min-max"
+
+
+def test_invalid_norm_strategy_raises():
+    ds = generate_synthetic_dataset(seed=0, n_test_images=10)
+    with pytest.raises(ValueError, match="norm_strategy"):
+        run_demo(ds.train_records, ds.test_records, ds.ground_truth,
+                 ds.classes, template_embeddings=ds.template_embeddings,
+                 shots=5, seed=0, norm_strategy="bogus")
+
+
+
+def test_figure5_real_image_rendering(tmp_path):
+    # A tiny real image + image_paths => Figure 5 must render real detections
+    # (no exception) and report that real imagery was used.
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from uadapt.demo.plotting import figure5_qualitative
+
+    img = tmp_path / "img.png"
+    plt.imsave(img, np.zeros((64, 64, 3), dtype=np.uint8))
+
+    proposals = [
+        {"image_id": "demo_0000", "class": "fire", "bbox": [10, 10, 30, 30],
+         "w": 0.85, "s_text": 0.3, "s_visual": 0.8,
+         "text_correct": False, "visual_correct": True},
+        {"image_id": "demo_0001", "class": "smoke", "bbox": [5, 5, 20, 20],
+         "w": 0.2, "s_text": 0.9, "s_visual": 0.2,
+         "text_correct": True, "visual_correct": False},
+        {"image_id": "demo_0002", "class": "vehicle", "bbox": [8, 8, 25, 25],
+         "w": 0.1, "s_text": 0.7, "s_visual": 0.3,
+         "text_correct": True, "visual_correct": False},
+    ]
+    ground_truth = [
+        {"image_id": "demo_0000", "class": "fire", "bbox": [10, 10, 30, 30]},
+        {"image_id": "demo_0001", "class": "smoke", "bbox": [5, 5, 20, 20]},
+    ]
+    image_paths = {k: str(img) for k in ("demo_0000", "demo_0001", "demo_0002")}
+
+    fig, axes = plt.subplots(1, 3)
+    try:
+        note = figure5_qualitative(proposals, ground_truth, axes, seed=0,
+                                   image_paths=image_paths)
+        assert "real detections" in note
+        assert "schematic" not in note
+    finally:
+        plt.close(fig)
+
+
+def test_figure5_schematic_fallback_without_paths(results, dataset):
+    # Without image_paths (synthetic mode) Figure 5 must fall back to the
+    # schematic scene and still render without error.
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from uadapt.demo.plotting import figure5_qualitative
+
+    fig, axes = plt.subplots(1, 3)
+    try:
+        note = figure5_qualitative(results.proposal_level, dataset.ground_truth,
+                                   axes, seed=0, image_paths=None)
+        assert "schematic" in note
+    finally:
+        plt.close(fig)

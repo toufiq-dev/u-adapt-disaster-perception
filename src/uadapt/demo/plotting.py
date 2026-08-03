@@ -139,19 +139,28 @@ def figure5_qualitative(
     ground_truth: Sequence[Dict],
     ax,
     seed: int = 0,
+    image_paths: Optional[Dict[str, str]] = None,
 ) -> str:
-    """Fig 5: schematic examples — high w, low w, and a gate-corrected case.
+    """Fig 5: qualitative examples — high w, low w, and a gate-corrected case.
 
-    No real imagery exists in the demo, so each panel renders a stylized
-    scene (deterministic gray blocks) with the GT box (green) and the
-    proposal box colored by gate weight.
+    When ``image_paths`` maps a proposal's ``image_id`` to an existing image
+    file (real cached mode), the panel shows the REAL detection image with GT
+    (green) and proposal (blue) boxes. Otherwise a deterministic stylized
+    scene is drawn (synthetic-mode fallback), so the figure always renders.
     """
     rng = np.random.default_rng(seed)
     gt_by: Dict[str, List[Dict]] = {}
     for g in ground_truth:
         gt_by.setdefault(g["image_id"], []).append(g)
 
+    resolved = _resolve_image_paths(image_paths)
+
     def _pick(cond) -> Optional[Dict]:
+        # Prefer a matching proposal whose image is resolvable (real
+        # detections); fall back to any matching proposal (schematic).
+        for p in proposals:
+            if cond(p) and p["image_id"] in resolved:
+                return p
         for p in proposals:
             if cond(p):
                 return p
@@ -166,6 +175,7 @@ def figure5_qualitative(
          lambda p: abs(p["w"] - 0.5) > 0.25 and p["text_correct"] != p["visual_correct"]),
     ]
 
+    used_real = False
     axes = ax if hasattr(ax, "__len__") else [ax]
     for panel, (title, cond) in zip(axes, cases):
         p = _pick(cond)
@@ -173,35 +183,87 @@ def figure5_qualitative(
             panel.set_title(title + "\n(no example found)", fontsize=8)
             panel.axis("off")
             continue
-        panel.set_facecolor("#f5f5f5")
-        panel.set_xlim(0, 512)
-        panel.set_ylim(512, 0)
-        panel.set_xticks([])
-        panel.set_yticks([])
-        for _ in range(8):  # deterministic stylized scene blocks
-            x, y = rng.uniform(0, 430, 2)
-            w, h = rng.uniform(20, 90, 2)
-            panel.add_patch(plt.Rectangle((x, y), w, h, facecolor="#d7d7d7",
-                                          edgecolor="none"))
+        img_path = resolved.get(p["image_id"])
         gt = gt_by.get(p["image_id"], [])
-        for g in gt:
-            b = np.asarray(g["bbox"])
-            panel.add_patch(plt.Rectangle((b[0], b[1]), b[2] - b[0], b[3] - b[1],
-                                          fill=False, edgecolor="#2ca02c", lw=2.5))
-        b = np.asarray(p["bbox"])
-        panel.add_patch(plt.Rectangle((b[0], b[1]), b[2] - b[0], b[3] - b[1],
-                                      fill=False, edgecolor="#1f77b4", lw=2.5))
-        panel.text(
-            5, 20,
-            f"{p['class']}  w={p['w']:.2f}  s_text={p['s_text']:.2f} "
-            f"s_vis={p['s_visual']:.2f}\n"
-            f"text_ok={p['text_correct']}  visual_ok={p['visual_correct']}",
-            fontsize=8, va="top",
-            bbox=dict(facecolor="white", alpha=0.85, edgecolor="none"),
-        )
+        if img_path is not None:
+            try:
+                _draw_real_detection(panel, img_path, p, gt)
+                used_real = True
+            except Exception:
+                # Corrupt/unreadable image: fall back to the schematic panel
+                # rather than killing the whole figure render.
+                panel.cla()
+                _draw_schematic(panel, rng, p, gt)
+        else:
+            _draw_schematic(panel, rng, p, gt)
         panel.set_title(title, fontsize=8)
-    axes[0].set_title("Figure 5 — Qualitative examples (schematic)", fontsize=11)
+    axes[0].set_title(
+        "Figure 5 — Qualitative examples (real detections)" if used_real
+        else "Figure 5 — Qualitative examples (schematic)",
+        fontsize=11,
+    )
+    if used_real:
+        return "real detections shown for high-w, low-w, and gate-corrected cases"
     return "high-w, low-w, and gate-corrected cases shown schematically"
+
+
+def _resolve_image_paths(image_paths: Optional[Dict[str, str]]) -> Dict[str, "Path"]:
+    """Return {image_id: Path} for entries whose file actually exists."""
+    from pathlib import Path
+
+    if not image_paths:
+        return {}
+    out: Dict[str, Path] = {}
+    for image_id, p in image_paths.items():
+        path = Path(p)
+        if path.exists():
+            out[image_id] = path
+    return out
+
+
+def _draw_real_detection(panel, img_path, p: Dict, gt: Sequence[Dict]) -> None:
+    """Render the real image with GT + proposal boxes (native pixel coords)."""
+    img = plt.imread(str(img_path))
+    panel.imshow(img)
+    panel.set_xlim(0, img.shape[1])
+    panel.set_ylim(img.shape[0], 0)
+    panel.set_xticks([])
+    panel.set_yticks([])
+    _draw_boxes_and_text(panel, p, gt)
+
+
+def _draw_schematic(panel, rng: np.random.Generator, p: Dict, gt: Sequence[Dict]) -> None:
+    """Deterministic stylized scene (synthetic-mode fallback)."""
+    panel.set_facecolor("#f5f5f5")
+    panel.set_xlim(0, 512)
+    panel.set_ylim(512, 0)
+    panel.set_xticks([])
+    panel.set_yticks([])
+    for _ in range(8):  # deterministic stylized scene blocks
+        x, y = rng.uniform(0, 430, 2)
+        w, h = rng.uniform(20, 90, 2)
+        panel.add_patch(plt.Rectangle((x, y), w, h, facecolor="#d7d7d7",
+                                      edgecolor="none"))
+    _draw_boxes_and_text(panel, p, gt)
+
+
+def _draw_boxes_and_text(panel, p: Dict, gt: Sequence[Dict]) -> None:
+    """GT boxes (green) + proposal box (blue) + per-proposal gate annotation."""
+    for g in gt:
+        b = np.asarray(g["bbox"])
+        panel.add_patch(plt.Rectangle((b[0], b[1]), b[2] - b[0], b[3] - b[1],
+                                      fill=False, edgecolor="#2ca02c", lw=2.5))
+    b = np.asarray(p["bbox"])
+    panel.add_patch(plt.Rectangle((b[0], b[1]), b[2] - b[0], b[3] - b[1],
+                                  fill=False, edgecolor="#1f77b4", lw=2.5))
+    panel.text(
+        5, 20,
+        f"{p['class']}  w={p['w']:.2f}  s_text={p['s_text']:.2f} "
+        f"s_vis={p['s_visual']:.2f}\n"
+        f"text_ok={p['text_correct']}  visual_ok={p['visual_correct']}",
+        fontsize=8, va="top",
+        bbox=dict(facecolor="white", alpha=0.85, edgecolor="none"),
+    )
 
 
 def figure6_ablation(ablation: Dict[str, float], ax) -> str:
@@ -226,8 +288,13 @@ def render_all_figures(
     proposals: Sequence[Dict],
     ground_truth: Sequence[Dict],
     out_dir: str,
+    image_paths: Optional[Dict[str, str]] = None,
 ) -> List[str]:
-    """Render and save Figures 1-6 to ``out_dir``. Returns saved paths."""
+    """Render and save Figures 1-6 to ``out_dir``. Returns saved paths.
+
+    ``image_paths`` (optional {image_id: path}) enables real-detection panels
+    in Figure 5; missing/unresolvable files fall back to schematic panels.
+    """
     import os
 
     import matplotlib.pyplot as plt
@@ -240,7 +307,8 @@ def render_all_figures(
         ("figure2_d1_d2.png", lambda ax: figure2_d1_d2(results["diagnostics"], ax)),
         ("figure3_gate_favorability.png", lambda ax: figure3_gate_favorability(results["diagnostics"], ax)),
         ("figure4_gap_recovery.png", lambda ax: figure4_gap_recovery(results["gap_recovery"], ax)),
-        ("figure5_qualitative.png", lambda ax: figure5_qualitative(proposals, ground_truth, ax)),
+        ("figure5_qualitative.png", lambda ax: figure5_qualitative(
+            proposals, ground_truth, ax, image_paths=image_paths)),
         ("figure6_ablation.png", lambda ax: figure6_ablation(results["ablation"], ax)),
     ]
     for fname, fn in specs:

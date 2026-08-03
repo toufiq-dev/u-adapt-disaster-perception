@@ -1,6 +1,7 @@
 """Uncertainty estimators (text variance, visual variance, MC Dropout)."""
 
 from .variance_estimators import (
+    absolute_normalize,
     mc_dropout_estimate,
     mean_pairwise_cosine_distance,
     min_max_normalize,
@@ -10,6 +11,7 @@ from .variance_estimators import (
 )
 
 __all__ = [
+    "absolute_normalize",
     "mc_dropout_estimate",
     "mean_pairwise_cosine_distance",
     "min_max_normalize",
