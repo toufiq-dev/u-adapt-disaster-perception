@@ -17,12 +17,25 @@ honestly (docs/pre_registration.md).
      by a_visual (validates the bias-variance model).
   D5 (Distribution of normalized variances): histogram + quartiles; flags the
      Taylor expansion if >30% of values fall below 0.25 or above 0.75.
+
+Pooling (pre-registration deviation 2026-08-03, docs/change_log.md):
+D1/D2/D3 computed on D-Fire alone are STRUCTURALLY UNDERPOWERED — its 2
+classes (fire, smoke) yield only 2 distinct normalized variance values, so a
+meaningful Spearman rank correlation / gate-favorability trend cannot be
+computed from 2 data points. The pre-registered protocol therefore computes
+D1/D2/D3 POOLED across LADD + D-Fire (3 distinct classes: pedestrian, fire,
+smoke). Each of d1_text_uncertainty_accuracy, d2_visual_uncertainty_accuracy
+and d3_gate_favorability accepts an optional ``pool_with`` argument (the
+second dataset's arrays) and returns a structured dict with per-dataset
+(``primary`` / ``secondary``) and ``pooled`` results; pooled values are the
+PRIMARY diagnostic claim, per-dataset values are still reported. Existing
+calls without ``pool_with`` are unchanged (backward compatible).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -60,11 +73,18 @@ def _bin_means(values: np.ndarray, targets: np.ndarray, n_bins: int) -> Tuple[np
 
 
 def _spearman_rho(x: np.ndarray, y: np.ndarray) -> float:
-    """Spearman rank correlation in pure numpy (ties averaged)."""
+    """Spearman rank correlation in pure numpy (ties averaged).
+
+    Returns 0.0 when either input is constant (undefined correlation — e.g.
+    a single-class dataset contributes exactly one distinct variance value),
+    so results stay finite and JSON-serializable.
+    """
     if len(x) < 2:
         return 0.0
     rx = _rankdata(x)
     ry = _rankdata(y)
+    if np.ptp(rx) == 0.0 or np.ptp(ry) == 0.0:
+        return 0.0
     return float(np.corrcoef(rx, ry)[0, 1])
 
 
@@ -105,11 +125,94 @@ def _binomial_pvalue(n: int, k: int, p0: float = 0.5) -> float:
     return float(2.0 * (1.0 - 0.5 * (1.0 + math.erf(abs(z) / math.sqrt(2.0)))))
 
 
+def _validate_pool_arrays(
+    primary: Sequence[np.ndarray],
+    secondary: Sequence[np.ndarray],
+    diag_name: str,
+    paired: bool = True,
+) -> None:
+    """Validate arrays passed to a ``pool_with`` call (deviation 2026-08-03).
+
+    Raises a clear ValueError when a caller tries to pool INCOMPATIBLE
+    datasets: every array must be 1-D, and for the paired D1/D2 case each
+    dataset's variance array must have the same length as its correctness
+    array (one variance value per proposal). D3 (``paired=False``) only
+    enforces the 1-D requirement — its two weight subsets legitimately have
+    different lengths.
+    """
+    for label, arrays in (
+        ("primary dataset", primary),
+        ("pool_with dataset", secondary),
+    ):
+        for arr in arrays:
+            arr = np.asarray(arr)
+            if arr.ndim != 1:
+                raise ValueError(
+                    f"{diag_name}: cannot pool incompatible datasets — {label} "
+                    f"contributed a {arr.ndim}-D array (shape {arr.shape}); pooled "
+                    "diagnostics are defined at the proposal level and need 1-D arrays."
+                )
+    if paired:
+        (v1, e1), (v2, e2) = primary, secondary
+        for label, (v, e) in (("primary", (v1, e1)), ("pool_with", (v2, e2))):
+            if len(v) != len(e):
+                raise ValueError(
+                    f"{diag_name}: cannot pool incompatible datasets — {label} "
+                    f"variance array has length {len(v)} but its correctness array has "
+                    f"length {len(e)}. Each dataset must pair exactly one variance value "
+                    "with one correctness label per proposal."
+                )
+
+
 def d1_text_uncertainty_accuracy(
     norm_text_variances: np.ndarray,
     correct: np.ndarray,
-) -> DiagnosticResult:
-    """D1: text uncertainty vs proposal-level error rate (10 bins) + Spearman."""
+    pool_with: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+) -> Union[DiagnosticResult, Dict[str, DiagnosticResult]]:
+    """D1: text uncertainty vs proposal-level error rate (10 bins) + Spearman.
+
+    Args:
+        norm_text_variances: normalized per-proposal text variance in [0, 1].
+        correct: per-proposal correctness (IoU >= 0.5 with same-class GT).
+        pool_with: optional ``(norm_text_variances, correct)`` of a SECOND
+            dataset (e.g. LADD when the primary is D-Fire). When provided,
+            returns a structured dict::
+
+                {"primary":   DiagnosticResult,  # this dataset alone
+                 "secondary": DiagnosticResult,  # pool_with dataset alone
+                 "pooled":    DiagnosticResult}  # concatenated -> PRIMARY claim
+
+            Pooling is mandated by the pre-registration deviation of
+            2026-08-03 (docs/change_log.md §10): on 2-class D-Fire there are
+            only 2 distinct normalized variance values, so the Spearman
+            correlation is structurally underpowered. Pooled across
+            LADD + D-Fire (3 distinct classes) it has statistical power.
+
+    Returns:
+        A :class:`DiagnosticResult` when ``pool_with`` is None (unchanged,
+        backward compatible), else the structured per-dataset + pooled dict.
+
+    Raises:
+        ValueError: if the arrays to pool are not 1-D or a dataset's
+            variance/error arrays differ in length (incompatible datasets).
+    """
+    if pool_with is not None:
+        primary_var = np.asarray(norm_text_variances, dtype=float)
+        primary_correct = np.asarray(correct, dtype=float)
+        other_var = np.asarray(pool_with[0], dtype=float)
+        other_correct = np.asarray(pool_with[1], dtype=float)
+        _validate_pool_arrays(
+            (primary_var, primary_correct), (other_var, other_correct),
+            "D1_text_uncertainty_accuracy",
+        )
+        return {
+            "primary": d1_text_uncertainty_accuracy(norm_text_variances, correct),
+            "secondary": d1_text_uncertainty_accuracy(pool_with[0], pool_with[1]),
+            "pooled": d1_text_uncertainty_accuracy(
+                np.concatenate([primary_var, other_var]),
+                np.concatenate([primary_correct, other_correct]),
+            ),
+        }
     correct = np.asarray(correct, dtype=float)
     mids, err_rates = _bin_means(
         np.asarray(norm_text_variances, dtype=float), 1.0 - correct, D1_N_BINS
@@ -128,8 +231,46 @@ def d1_text_uncertainty_accuracy(
 def d2_visual_uncertainty_accuracy(
     norm_visual_variances: np.ndarray,
     correct: np.ndarray,
-) -> DiagnosticResult:
-    """D2: visual uncertainty vs visual-only error rate + Spearman."""
+    pool_with: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+) -> Union[DiagnosticResult, Dict[str, DiagnosticResult]]:
+    """D2: visual uncertainty vs visual-only error rate + Spearman.
+
+    Same contract as :func:`d1_text_uncertainty_accuracy` (including the
+    optional ``pool_with`` for the pooled LADD + D-Fire protocol, deviation
+    2026-08-03); returns a structured per-dataset + pooled dict when pooling.
+
+    Args:
+        norm_visual_variances: normalized per-proposal visual variance in
+            [0, 1].
+        correct: per-proposal correctness.
+        pool_with: optional ``(norm_visual_variances, correct)`` of a second
+            dataset; pooled Spearman ρ is the PRIMARY claim.
+
+    Returns:
+        A :class:`DiagnosticResult` when ``pool_with`` is None, else the
+        structured per-dataset + pooled dict.
+
+    Raises:
+        ValueError: if the arrays to pool are incompatible (see
+            :func:`_validate_pool_arrays`).
+    """
+    if pool_with is not None:
+        primary_var = np.asarray(norm_visual_variances, dtype=float)
+        primary_correct = np.asarray(correct, dtype=float)
+        other_var = np.asarray(pool_with[0], dtype=float)
+        other_correct = np.asarray(pool_with[1], dtype=float)
+        _validate_pool_arrays(
+            (primary_var, primary_correct), (other_var, other_correct),
+            "D2_visual_uncertainty_accuracy",
+        )
+        return {
+            "primary": d2_visual_uncertainty_accuracy(norm_visual_variances, correct),
+            "secondary": d2_visual_uncertainty_accuracy(pool_with[0], pool_with[1]),
+            "pooled": d2_visual_uncertainty_accuracy(
+                np.concatenate([primary_var, other_var]),
+                np.concatenate([primary_correct, other_correct]),
+            ),
+        }
     correct = np.asarray(correct, dtype=float)
     mids, err_rates = _bin_means(
         np.asarray(norm_visual_variances, dtype=float), 1.0 - correct, D2_N_BINS
@@ -152,7 +293,8 @@ def d2_visual_uncertainty_accuracy(
 def d3_gate_favorability(
     w_text_better: np.ndarray,
     w_visual_better: np.ndarray,
-) -> DiagnosticResult:
+    pool_with: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+) -> Union[DiagnosticResult, Dict[str, DiagnosticResult]]:
     """D3: gate favorability.
 
     Args:
@@ -160,10 +302,40 @@ def d3_gate_favorability(
             more accurate one (expected: w < 0.5).
         w_visual_better: gate weights on cases where the VISUAL modality is
             the more accurate one (expected: w > 0.5).
+        pool_with: optional ``(w_text_better, w_visual_better)`` of a SECOND
+            dataset (e.g. LADD when the primary is D-Fire). Same structured
+            return contract as :func:`d1_text_uncertainty_accuracy`; the
+            binomial test runs on the concatenated favorability counts, so
+            the pooled result is the PRIMARY claim (deviation 2026-08-03).
 
     Favorability fraction = fraction of cases where the gate points at the
     better modality; binomial test vs 0.5 (alpha=0.05).
+
+    Returns:
+        A :class:`DiagnosticResult` when ``pool_with`` is None, else the
+        structured per-dataset + pooled dict.
+
+    Raises:
+        ValueError: if the arrays to pool are not 1-D (the two weight
+            subsets of a dataset legitimately differ in length).
     """
+    if pool_with is not None:
+        primary_text = np.asarray(w_text_better, dtype=float)
+        primary_visual = np.asarray(w_visual_better, dtype=float)
+        other_text = np.asarray(pool_with[0], dtype=float)
+        other_visual = np.asarray(pool_with[1], dtype=float)
+        _validate_pool_arrays(
+            (primary_text, primary_visual), (other_text, other_visual),
+            "D3_gate_favorability", paired=False,
+        )
+        return {
+            "primary": d3_gate_favorability(w_text_better, w_visual_better),
+            "secondary": d3_gate_favorability(pool_with[0], pool_with[1]),
+            "pooled": d3_gate_favorability(
+                np.concatenate([primary_text, other_text]),
+                np.concatenate([primary_visual, other_visual]),
+            ),
+        }
     n_fav = int(np.sum(np.asarray(w_text_better) < 0.5) + np.sum(np.asarray(w_visual_better) > 0.5))
     n_total = int(len(w_text_better) + len(w_visual_better))
     frac = n_fav / n_total if n_total else 0.0

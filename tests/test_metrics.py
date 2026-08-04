@@ -214,3 +214,125 @@ def test_d5_variance_distribution_flag_and_ok():
     ok = rng.beta(5, 5, size=400)
     res2 = d5_variance_distribution(ok, ok)
     assert res2.flag is None or "ok" in res2.flag
+
+
+# ----------------------------------------------------------------------
+# Pooled diagnostics D1-D3 (pre-registration deviation 2026-08-03, §10)
+# ----------------------------------------------------------------------
+def test_d1_pooled_returns_structured_dict_and_is_informative():
+    # The structural-power narrative: D-Fire alone has 2 classes -> exactly 2
+    # distinct variance values and errors INDEPENDENT of variance, so rho is
+    # ~0. Pooled across LADD+D-Fire (pedestrian adds a third class with error
+    # rate growing in variance) the Spearman rho becomes meaningful.
+    rng = np.random.default_rng(0)
+    dfire_v = np.tile(np.array([0.0, 1.0]), 500)            # 2 distinct values
+    dfire_correct = rng.uniform(0, 1, 1000) > 0.5            # errors ~ 50% everywhere
+    ladd_v = np.tile(np.array([0.0, 0.5, 1.0]), 400)         # 3 distinct values
+    ladd_correct = rng.uniform(0, 1, 1200) > (0.2 + 0.6 * ladd_v)
+
+    res = d1_text_uncertainty_accuracy(
+        dfire_v, dfire_correct, pool_with=(ladd_v, ladd_correct)
+    )
+    assert set(res) == {"primary", "secondary", "pooled"}
+    # D-Fire alone is structurally underpowered (rho ~ 0 by construction);
+    # the pooled (PRIMARY claim) and LADD-alone values carry the signal.
+    assert abs(res["primary"].summary["spearman_rho"]) < 0.15
+    assert res["secondary"].summary["spearman_rho"] > 0.3
+    assert res["pooled"].summary["spearman_rho"] > 0.2
+    # Pooling must produce a statistic that DIFFERS from each dataset alone.
+    assert not np.isclose(res["pooled"].summary["spearman_rho"],
+                          res["primary"].summary["spearman_rho"])
+    assert not np.isclose(res["pooled"].summary["spearman_rho"],
+                          res["secondary"].summary["spearman_rho"])
+    assert res["pooled"].summary["n"] == pytest.approx(2200.0)
+
+
+def test_d2_pooled_concatenates_visual_uncertainty():
+    # Same contract as D1 for the visual variance term.
+    rng = np.random.default_rng(1)
+    a_v = np.tile(np.array([0.0, 1.0]), 250)
+    a_correct = rng.uniform(0, 1, 500) > 0.5
+    b_v = np.tile(np.array([0.0, 0.5, 1.0]), 200)
+    b_correct = rng.uniform(0, 1, 600) > (0.2 + 0.6 * b_v)
+
+    res = d2_visual_uncertainty_accuracy(
+        a_v, a_correct, pool_with=(b_v, b_correct)
+    )
+    assert abs(res["primary"].summary["spearman_rho"]) < 0.15
+    assert res["secondary"].summary["spearman_rho"] > 0.3
+    assert res["pooled"].summary["spearman_rho"] > 0.2
+    assert res["pooled"].summary["n"] == pytest.approx(1100.0)
+
+
+def test_d3_pooled_concatenates_binomial_test():
+    # Primary (D-Fire stand-in): gate always picks the WRONG modality.
+    a_w_text = np.full(10, 0.9)
+    a_w_visual = np.full(10, 0.1)
+    # Secondary (LADD): gate almost always right.
+    b_w_text = np.full(20, 0.1)
+    b_w_visual = np.full(20, 0.9)
+
+    res = d3_gate_favorability(
+        a_w_text, a_w_visual, pool_with=(b_w_text, b_w_visual)
+    )
+    assert res["primary"].summary["favorability_fraction"] == 0.0
+    assert res["secondary"].summary["favorability_fraction"] == 1.0
+    # Pooled: 40 favorable of 60 disagreeing cases -> 2/3.
+    assert res["pooled"].summary["favorability_fraction"] == pytest.approx(2.0 / 3.0)
+    assert res["pooled"].summary["n"] == pytest.approx(60.0)
+    assert res["pooled"].summary["binomial_pvalue"] < 0.05
+
+
+def test_pooled_diagnostics_empty_datasets():
+    empty = np.array([])
+    v = np.array([0.2, 0.5, 0.8])
+    c = np.array([True, False, True])
+    res = d1_text_uncertainty_accuracy(empty, empty, pool_with=(v, c))
+    assert res["primary"].summary["n"] == 0.0
+    assert res["pooled"].summary["n"] == pytest.approx(3.0)
+    # Both datasets empty -> still returns a valid (empty) pooled result.
+    res2 = d1_text_uncertainty_accuracy(empty, empty, pool_with=(empty, empty))
+    assert res2["pooled"].summary["n"] == 0.0
+    assert res2["pooled"].summary["spearman_rho"] == 0.0
+
+
+def test_pool_incompatible_lengths_raise_clear_error():
+    with pytest.raises(ValueError, match="length"):
+        d1_text_uncertainty_accuracy(
+            np.array([0.1, 0.2]),
+            np.array([True, True]),
+            pool_with=(np.array([0.3, 0.4]), np.array([True])),
+        )
+    # The PRIMARY dataset's own mismatch is caught too.
+    with pytest.raises(ValueError, match="length"):
+        d2_visual_uncertainty_accuracy(
+            np.array([0.1, 0.2]),
+            np.array([True]),
+            pool_with=(np.array([0.3, 0.4]), np.array([True, False])),
+        )
+
+
+def test_pool_rejects_non_1d_arrays():
+    with pytest.raises(ValueError, match="1-D"):
+        d1_text_uncertainty_accuracy(
+            np.ones((2, 2)),
+            np.array([True, False]),
+            pool_with=(np.array([0.1, 0.2]), np.array([True, False])),
+        )
+
+
+def test_pool_single_class_constant_variance_stays_finite():
+    # One class -> one distinct variance value; the correlation is undefined
+    # and must be reported as 0.0 (not NaN) so results stay JSON-serializable
+    # even when the pooled partner provides the signal.
+    const = np.full(50, 0.5)
+    const_correct = np.array([True] * 25 + [False] * 25)
+    partner_v = np.tile(np.array([0.0, 0.25, 0.5, 0.75, 1.0]), 10)
+    partner_correct = np.tile(np.array([False, False, True, True, True]), 10)
+
+    res = d1_text_uncertainty_accuracy(
+        const, const_correct, pool_with=(partner_v, partner_correct)
+    )
+    assert res["primary"].summary["spearman_rho"] == 0.0
+    assert not np.isnan(res["pooled"].summary["spearman_rho"])
+    assert res["pooled"].summary["n"] == pytest.approx(100.0)
