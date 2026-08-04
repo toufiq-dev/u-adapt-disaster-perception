@@ -126,6 +126,30 @@ pytest
 - Statistical testing pre-registered: paired t-test + Wilcoxon signed-rank over 10 seeds, Benjamini–Hochberg FDR correction, Cohen's d (see `docs/pre_registration.md` §Statistical Testing).
 - All dataset/model licenses verified before experiments; any restricted dataset is replaced or dropped and logged in `docs/change_log.md`.
 
+## Known Limitations
+
+- **Synthetic demo results are mechanism validation only.** The supervisor demo
+  ([`docs/supervisor_demo_report.md`](docs/supervisor_demo_report.md),
+  `notebooks/supervisor_demo_visualizations.ipynb`) runs on a deterministic
+  synthetic stand-in world when no real feature cache is available. Its numbers
+  validate the pipeline wiring and diagnostics — they are **not** research
+  results.
+- **Real-data evaluation is required for research claims.** All thesis claims
+  must come from the pre-registered real-data protocol (LADD / D-Fire, 10
+  seeds, paired tests, §9 of
+  [`docs/pre_registration.md`](docs/pre_registration.md)).
+- **D1/D2/D3 are computed pooled across datasets for statistical power.** On
+  D-Fire alone only 2 classes exist (→ 2 distinct variance values), from which
+  no meaningful Spearman ρ or gate-favorability trend can be computed. Per
+  pre-registration deviation §10 (2026-08-03;
+  [`docs/change_log.md`](docs/change_log.md)), D1/D2/D3 are evaluated **pooled
+  across LADD+D-Fire** (3 classes → 3 distinct variance values); per-dataset
+  values are still reported.
+- **Synthetic-world variance magnitudes are small under absolute scaling**
+  (x/2.0) — a demo-world artifact of the min-max stretch. Diagnostic **D5** is
+  the pre-registered sentinel: if real variances cluster near 0 or 1, it flags
+  and triggers the pre-registered Beta-regression fallback.
+
 ## License
 
 Code in this repository is released under the MIT License (see [LICENSE](LICENSE)). Model and dataset licenses are documented separately in [`docs/licenses.md`](docs/licenses.md).

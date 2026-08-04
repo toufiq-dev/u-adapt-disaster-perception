@@ -1,5 +1,5 @@
 # LADD (Large-scale Aerial Disaster Damage) — primary few-shot detection benchmark
-# License: verify in Milestone 1 (see docs/licenses.md and issue #1)
+# License: research use (presumed; confirm at manual download) — see docs/licenses.md
 name: ladd
 task: detection
 images: 1365

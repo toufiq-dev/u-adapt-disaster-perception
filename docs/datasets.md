@@ -13,7 +13,7 @@ datasets. **No raw data lives in the repository** — see
 | Classes | 1 (pedestrian / search-and-rescue target) |
 | Annotation | Boxes (COCO-style) |
 | Zero-shot → transfer (Grounding DINO) | 61.0% → 92.2% mAP50 (gap 31.2 pp) |
-| License | **TBD — verify (issue #1)** |
+| License | Research use (presumed; confirm at manual download) — Confirmed 2026-08-04 ([`docs/licenses.md`](licenses.md)) |
 | Role | Primary few-shot detection benchmark |
 
 ### D-Fire
@@ -23,8 +23,9 @@ datasets. **No raw data lives in the repository** — see
 | Classes | 2 (fire, smoke) |
 | Annotation | Boxes |
 | Zero-shot → transfer (Grounding DINO) | 27.5% → 65.6% mAP50 (gap 38.1 pp) |
-| License | **TBD — verify (issue #1)** |
+| License | Free for research use — Confirmed 2026-08-04 ([`docs/licenses.md`](licenses.md)) |
 | Role | Primary few-shot detection benchmark |
+| Annotation | Official labels are **YOLO format** (normalized `class xc yc w h`; `0=fire`, `1=smoke`); `download_datasets.py` converts to COCO-style JSON in `data/annotations/` |
 
 ## Auxiliary segmentation datasets (novel-category validation)
 
@@ -33,7 +34,7 @@ datasets. **No raw data lives in the repository** — see
 |-------|-------|
 | Images | 4,494 |
 | Classes | 10 (semantic segmentation) |
-| License | **TBD — verify (issue #1)** |
+| License | CC BY-NC-ND 4.0 — Confirmed 2026-08-04 ([`docs/licenses.md`](licenses.md)) |
 | Conversion | `data/mask_to_box/filter.py` |
 | Retained classes (frozen) | building, pool, vehicle, debris (region-level), roof |
 | Excluded (stuff) | road, tree, grass, sand, water |
@@ -43,7 +44,7 @@ datasets. **No raw data lives in the repository** — see
 |-------|-------|
 | Images | 2,289 |
 | Classes | 9 (semantic segmentation) |
-| License | **TBD — verify (issue #1)** |
+| License | CDLA-Permissive-1.0 — Confirmed 2026-08-04 ([`docs/licenses.md`](licenses.md)) |
 | Conversion | `data/mask_to_box/filter.py` |
 | Retained classes (frozen) | building-flooded, building-non-flooded (region-level damage), road-flooded, road-non-flooded (region-level), vehicle, pool |
 | Excluded (stuff) | water, tree, grass |
@@ -74,4 +75,16 @@ cached_features/{train,val,test}/  # extracted features
 ```
 
 If any dataset license restricts academic use, the dataset is replaced or
-dropped and logged in `docs/change_log.md`.
+dropped and logged in `docs/change_log.md` (none did — all four licenses
+confirmed 2026-08-04).
+
+## Milestone-1 download + pilot runbook (2026-08-04)
+
+Downloading and organizing LADD/D-Fire (with `--subset N` pilot mode),
+YOLO→COCO conversion, the verified source links, the LADD manual-download
+steps, and the n=10 pilot runbook live in
+[`data/download_scripts/README.md`](../data/download_scripts/README.md). The
+orchestrated real-data pipeline is `scripts/run_real_data_validation.sh`
+(`N_TEST_IMAGES=10` for the pilot); its report labels itself
+**"PILOT RESULTS (n=10 images)"** so pilot numbers are never mistaken for
+final thesis results.

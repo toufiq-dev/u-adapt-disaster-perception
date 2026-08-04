@@ -1,12 +1,14 @@
 # D-Fire — primary few-shot detection benchmark (fire / smoke)
-# License: verify in Milestone 1 (see docs/licenses.md and issue #1)
+# License: research use — Confirmed 2026-08-04 (see docs/licenses.md)
 name: dfire
 task: detection
 images: 21527
 classes:
   - fire
   - smoke
-annotation_format: coco_boxes        # box annotations provided directly
+annotation_format: yolo_boxes        # official labels are YOLO (normalized);
+                                     # download_datasets.py converts to COCO
+                                     # JSON in data/annotations/ (gitignored)
 mask_to_box: false
 splits:
   train: data/raw/dfire/train

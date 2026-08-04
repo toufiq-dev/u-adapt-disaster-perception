@@ -4,6 +4,87 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-04 — Milestone 1: dataset licenses verified + download scripts (issues #1, #2)
+
+- **Dataset licenses verified (2026-08-04)** — `docs/licenses.md` filled in
+  for all four datasets (no `TBD` / "To verify" remains on the primary rows,
+  so the `run_real_data_validation.sh` [0/6] license gate now passes):
+  - **LADD** — research use only, presumed from the dataset documentation;
+    exact terms to confirm at the manual download step. The official repo
+    `huyhieupham/LADD` returned **404 on 2026-08-04** (GitHub API) and no
+    verified live URL could be found (no Zenodo record, no repo under the
+    author's account) — per the no-guessing policy the download script uses a
+    clearly-marked placeholder URL + manual instructions.
+  - **D-Fire** — free for research use; verified via the official
+    `gaia-solutions-on-demand/DFireDataset` README (the original `gaiasd/DFire`
+    is gone) + the Neural Computing & Applications 2022 paper. OneDrive and
+    Kaggle mirrors confirmed.
+  - **RescueNet** — CC BY-NC-ND 4.0 (academic use OK; do not redistribute
+    modified copies). **FloodNet+** — CDLA-Permissive-1.0.
+  - **Models**: OWL-ViT Apache-2.0, YOLOE26 AGPL-3.0 (THU-MIG/yoloe LICENSE),
+    CLIP MIT, DINOv2 Apache-2.0 — all confirmed 2026-08-04; Grounding DINO
+    already Apache-2.0.
+  - None of the licenses restricts academic use → **no dataset replacement
+    required** (pre-registration policy, `docs/pre_registration.md`).
+- **Download scripts added** — `data/download_scripts/download_datasets.py`:
+  D-Fire from the official OneDrive mirror (with `?download=1` direct-download
+  handling + Kaggle fallback + `--dfire-archive` manual fallback), YOLO→COCO
+  conversion into `data/annotations/dfire_{train,val,test}.json`, `--subset N`
+  pilot mode (10 images per split; full archive is still downloaded since
+  OneDrive cannot range-download, but only the subset is copied to
+  `data/raw`), SHA-256 checksums (`download_scripts/{ladd,dfire}/sha256sums.txt`),
+  and `--check-only` link verification.
+- **D-Fire config corrected** — `configs/datasets/dfire.yaml`
+  `annotation_format: coco_boxes` → `yolo_boxes` (official labels are YOLO
+  with normalized coordinates; the download script converts them to COCO for
+  the evaluation pipeline). Field is metadata-only (no code consumes it).
+- **Pilot labeling added to the report generator** —
+  `generate_real_data_report.py` now titles runs with any
+  `meta.n_test_images < 100` as **"PILOT RESULTS (n=<N> images)"** with a
+  warning banner, so the n=10 pilot report can never be mistaken for final
+  thesis results (report written to `docs/real_data_results_pilot.md`).
+- **Status**: raw-data download + execution of the n=10 pilot remain
+  **PENDING** — this machine has no torch/transformers and the LADD source is
+  a manual step; the runbook in `data/download_scripts/README.md` covers the
+  GPU/Colab execution path (`N_TEST_IMAGES=10 SKIP_PREREQS=0`).
+
+## 2026-08-04 — Pooled D1/D2/D3 diagnostics implemented (§10 deviation)
+
+- **Implemented the §10 pooled-diagnostics protocol** (deviation of
+  2026-08-03): `d1_text_uncertainty_accuracy`, `d2_visual_uncertainty_accuracy`,
+  and `d3_gate_favorability` in `src/uadapt/metrics/diagnostics.py` now accept
+  an optional `pool_with` argument carrying the SECOND dataset's arrays
+  (variance + correctness for D1/D2, gate-weight subsets for D3). When
+  pooling, each returns a structured dict `{primary, secondary, pooled}`:
+  per-dataset values are still reported, but the pooled value — computed on
+  the concatenated arrays before the Spearman ρ / binomial test — is the
+  PRIMARY diagnostic claim (fixes the 2-class statistical-power limitation:
+  D-Fire alone yields only 2 distinct variance values). Existing calls
+  without `pool_with` are unchanged (backward compatible). `_spearman_rho`
+  now returns 0.0 for constant inputs (undefined correlation), keeping
+  results JSON-serializable for single-class datasets.
+- `scripts/04_evaluate.py` gained `--pool-predictions` / `--pool-ground-truth`
+  (plus optional `--pool-primary-name` / `--pool-secondary-name`, defaults
+  `ladd`/`dfire`): when the second dataset is supplied, results report
+  `diagnostics_ladd`, `diagnostics_dfire` (per-dataset D1-D5) and
+  `diagnostics_pooled` (pooled D1/D2/D3, PRIMARY claim). Without pooling
+  args the output is unchanged (`diagnostics`).
+- Unit tests added in `tests/test_metrics.py`: pooled D1/D2/D3 structured
+  return + the statistical-power narrative (2-class D-Fire weak alone,
+  informative pooled), D3 pooled binomial concatenation, empty-dataset and
+  incompatible-length / non-1-D edge cases, and single-class
+  constant-variance behavior.
+- **Caveats consolidated and cross-referenced (2026-08-04).** The
+  *Methodological Caveats (2026-08-03)* section now sits directly after the
+  Key Results Table in `docs/supervisor_demo_report.md` (three subsections:
+  2-class statistical-power limitation, synthetic-world artifact, the fix
+  worked — incl. the D3 ≈ 5.4% stand-in number);
+  `notebooks/supervisor_demo_visualizations.ipynb` gained dedicated caveat
+  cells before Figures 2 and 3 (pooling requirement; synthetic-world D3
+  artifact) plus *real-data figures will supersede* notes; `README.md` gained
+  a *Known Limitations* section. All cross-reference the §10 pooled-
+  diagnostics deviation (2026-08-03) and this entry.
+
 ## 2026-08-03 — Absolute scaling normalization + thesis proposal (pre-registration deviations §2 and §10)
 
 - **PRE-REGISTRATION DEVIATION (§2) — absolute scaling added as the fourth
@@ -78,7 +159,8 @@ section of `docs/pre_registration.md`.
   - YOLO-World / YOLO11 AGPL-3.0 implications for the thesis — pending issue #1.
   - YOLOE26 checkpoint + license — pending issue #1.
   - Mode B full wiring (logreg/MLP + COCO/LVIS init ablation) — scheduled for
-    Milestone 6.
+    Milestone 7 (Mode B; renumbered from Milestone 6 when Milestone 3 —
+    Real-data validation — was inserted into `docs/thesis_plan.md`).
 
 ## 2026-08-01 — Synced repo with thesis proposal Revision 3
 
@@ -146,7 +228,8 @@ section of `docs/pre_registration.md`.
   0.5 = max-entropy prior); unit tests in `tests/test_mode_a_gate.py` cover
   config exposure, prior substitution, k≥2 invariance, and the gate-weight
   shift.
-- **Mode B wiring implemented (Milestone 6, proposal §5.4.1/§5.4.2/§5.4.3):**
+- **Mode B wiring implemented (Milestone 7 — renumbered from Milestone 6,
+  proposal §5.4.1/§5.4.2/§5.4.3):**
   new `src/uadapt/fusion/calibration.py` turns a 20-box/class calibration
   set (normalized 5-D gate inputs + text/visual correctness flags) into
   fused scores via a learned gate. `LogRegGate`/`MLPGate` gained

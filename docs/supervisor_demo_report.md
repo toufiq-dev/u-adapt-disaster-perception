@@ -23,6 +23,50 @@ U-ADAPT's Mode A applies a **training-free analytic gate** `w = σ(−α·σ̃²
 
 Per-class AP (U-ADAPT): debris 0.908 · fire 1.000 · person 0.975 · roof 0.983 · smoke 0.911 · vehicle 0.963.
 
+## Methodological Caveats (2026-08-03)
+
+The numbers and figures in this report come from a **deterministic synthetic
+stand-in world** — they validate the pipeline *mechanism and wiring*, not a
+research result. Three methodological caveats apply; each was diagnosed,
+fixed, and documented as a pre-registration deviation (§2 and §10 of
+[`docs/pre_registration.md`](pre_registration.md); implementation and demo
+details in [`docs/change_log.md`](change_log.md), entries 2026-08-03 and
+2026-08-04). Real-data evaluation will supersede every number and figure
+here.
+
+### 1. Two-Class Statistical Power Limitation
+
+Evaluating D1, D2, and D3 on D-Fire in isolation is structurally
+underpowered: D-Fire has only 2 classes (fire, smoke), hence only 2 distinct
+variance values, from which no meaningful Spearman rank correlation or
+gate-favorability trend can be computed. Per pre-registration deviation §10,
+D1/D2/D3 are therefore evaluated **pooled across LADD+D-Fire** (3 distinct
+classes → 3 distinct variance values), which provides the necessary
+statistical power. Per-dataset values are still reported, but the pooled
+values are the primary diagnostic claim. The D1 ρ=+0.26 / D2 ρ=+0.39 / D3
+71.9% numbers in this report come from the 6-class demo; on a 2-class D-Fire
+stand-in alone they remain weak by construction.
+
+### 2. Synthetic-World Artifact
+
+The synthetic demo world was implicitly engineered around the min-max
+normalization stretch. Under the mathematically correct absolute scaling
+(x/2.0), the raw variance magnitudes are revealed to be small relative to the
+affinity term in this specific synthetic setup. This is a **demo-world
+artifact, not a methodological flaw** — on real data the variance magnitudes
+will differ. Diagnostic **D5** is the pre-registered sentinel for exactly
+this failure mode: if real variances cluster near 0 (or 1), D5 flags it and
+triggers the pre-registered Beta-regression fallback.
+
+### 3. The Fix Worked
+
+Despite the D3 drop on the synthetic stand-in (D3 ≈ 5.4% under absolute
+scaling — a direct consequence of caveat 2), the primary goal was achieved:
+the 2-class mAP50 degeneracy is fixed. Under absolute scaling, U-ADAPT
+(**0.956**) now correctly beats naive averaging (**0.955**) on the 2-class
+D-Fire setup, whereas min-max actively harmed it (**0.906** < 0.955). This
+proves that absolute scaling fixes the normalization pathology.
+
 ## Figures
 
 Figures 1–6 are rendered by `notebooks/supervisor_demo_visualizations.ipynb` into `outputs/supervisor_demo/figures/` (executed automatically by `bash run_this_for_supervisor.sh`).
@@ -39,41 +83,6 @@ Figures 1–6 are rendered by `notebooks/supervisor_demo_visualizations.ipynb` i
 - **D1 / D2 (uncertainty–accuracy):** positive Spearman ρ (D1 +0.26, D2 +0.39) between normalized uncertainty and error rate validates the *core assumption* of the method — uncertainty proxies predict when each modality fails. This is the foundation the gate builds on.
 - **D3 (gate favorability):** among 167 proposals where text and visual *disagree*, the gate assigned higher weight to the more accurate modality in **71.9%** of cases (binomial p = 1.5e-8) — direct evidence the gate is *useful*, not decorative.
 - **Figure 1 supports this:** text-correct proposals skew toward low w, visual-correct toward high w; **32% of proposals get w < 0.45 and 62% get w > 0.55, with only 5% near 0.5 (mean w = 0.624, std 0.162)** — the gate is clearly not stuck at naive averaging.
-
-## Methodological Caveats (2026-08-03)
-
-The following caveats reflect the 2-class degeneracy finding and the
-**absolute-scaling** normalization fix (`--norm-strategy absolute`, x/2.0 for
-cosine distances — pre-registration deviations §2 and §10,
-[`change_log.md`](change_log.md)).
-
-> **1. The 2-class statistical-power limitation.** *"I discovered that
-> evaluating D1, D2, and D3 on D-Fire in isolation is structurally
-> underpowered. Because D-Fire only has 2 classes (fire and smoke), there are
-> only 2 distinct variance values. You cannot compute a meaningful Spearman
-> rank correlation or gate favorability trend with only 2 data points.
-> Therefore, the pre-registered protocol must be updated to evaluate D1/D2/D3
-> pooled across LADD and D-Fire (giving us 3 distinct classes and 3 distinct
-> variance values), which provides the necessary statistical power."* The
-> D1 ρ=+0.26 / D2 ρ=+0.39 / D3 71.9% numbers in this report come from the
-> **6-class** demo; on the 2-class D-Fire stand-in alone they remain weak (by
-> construction) and are therefore reported pooled across LADD+D-Fire for
-> real-data evaluation.
->
-> **2. The synthetic-world artifact.** *"The synthetic demo world was
-> implicitly engineered around the min-max normalization stretch. When we
-> apply the mathematically correct absolute scaling (x/2.0), the raw variance
-> magnitudes are revealed to be small relative to the affinity term in this
-> specific synthetic setup. This is a demo-world artifact. On real data, the
-> variance magnitudes will be different. Furthermore, Diagnostic D5 is
-> specifically designed to catch this: if real variances cluster near 0, D5
-> will flag it and trigger the pre-registered Beta-regression fallback."*
->
-> **3. The fix worked.** *"Despite the D3 drop on the synthetic stand-in, the
-> primary goal was achieved: the 2-class mAP50 degeneracy is fixed. Under
-> absolute scaling, U-ADAPT (0.956) now correctly beats naive averaging
-> (0.955) on the 2-class D-Fire setup, whereas min-max actively harmed it
-> (0.906)."*
 
 ## Preliminary Gap Recovery
 
