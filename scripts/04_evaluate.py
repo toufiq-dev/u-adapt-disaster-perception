@@ -214,13 +214,20 @@ def _proposal_correct(preds: List[Dict], gts: List[Dict]) -> np.ndarray:
 def _diag_arrays(preds: List[Dict], correct: np.ndarray) -> Dict[str, np.ndarray]:
     """Extract the variance / gate arrays a diagnostic run needs.
 
-    Placeholders: real normalized variances flow from Mode A wiring
-    (Milestone 5); the constant 0.5 values keep the machinery runnable.
+    03_run_fusion.py emits real per-proposal ``norm_text_var`` (normalized
+    class-similarity entropy) and ``norm_visual_var`` (support dispersion)
+    since change_log 2026-08-05; when a predictions file predates that
+    (or was produced by a path without the terms), the old neutral 0.5 is
+    kept so the machinery stays runnable.
     """
     n = len(preds)
     return {
-        "norm_text_var": np.full(n, 0.5),
-        "norm_visual_var": np.full(n, 0.5),
+        "norm_text_var": np.asarray(
+            [p.get("norm_text_var", 0.5) for p in preds], dtype=float
+        ),
+        "norm_visual_var": np.asarray(
+            [p.get("norm_visual_var", 0.5) for p in preds], dtype=float
+        ),
         "affinities": np.asarray([p.get("affinity", 0.5) for p in preds], dtype=float),
         "w": np.asarray([p.get("gate_weight", 0.5) for p in preds], dtype=float),
         "correct": np.asarray(correct, dtype=bool),
@@ -259,6 +266,11 @@ def _per_dataset_dict(
     d2 = d2_visual_uncertainty_accuracy(a["norm_visual_var"], a["correct"])
     d3 = d3_gate_favorability(a["w"][a["w"] < 0.5], a["w"][a["w"] > 0.5])
     d4 = d4_affinity_diagnostic(a["w"], np.full_like(a["w"], 0.5), a["affinities"])
+    # NOTE (2026-08-05): this D5 runs on the normalized arrays carried in the
+    # predictions JSON, while compute_pooled_diagnostics.py runs D5 on the raw
+    # absolute-scale per-proposal values (text_entropy, distance/2.0). The two
+    # scripts intentionally use different scales for the same diagnostic name;
+    # the pooled-diagnostics path is the PRIMARY real-data one.
     d5 = d5_variance_distribution(a["norm_text_var"], a["norm_visual_var"])
     return {
         d1.name: _diag_dict(d1),

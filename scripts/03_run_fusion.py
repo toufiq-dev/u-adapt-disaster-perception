@@ -154,7 +154,10 @@ def _run_mode_a(records, prototype_payload, gate: ModeAGate) -> list[dict]:
     """
     import numpy as np
 
-    from uadapt.uncertainty.variance_estimators import visual_affinity
+    from uadapt.uncertainty.variance_estimators import (
+        proposal_text_variance,
+        visual_affinity,
+    )
 
     results = []
     for rec in records:
@@ -162,9 +165,13 @@ def _run_mode_a(records, prototype_payload, gate: ModeAGate) -> list[dict]:
         if proto is None:
             continue
         affinity = visual_affinity(rec.visual_feature, np.asarray(proto["centroid"]))
-        # Placeholders until Milestone 5: normalized text/visual variances from
-        # cached text_similarities + prototype sigma values.
-        norm_text_var = 0.5
+        # REAL per-proposal text variance from the cached class-similarity
+        # vector (normalized entropy, [0, 1]) — replaces the 0.5 placeholder
+        # that zeroed D1 (change_log.md 2026-08-05). Visual variance remains
+        # the class-level support dispersion (sigma_visual); a per-proposal
+        # box-to-support term needs the support features persisted in the
+        # prototype payload (02_build_prototypes.py), which is a follow-up.
+        norm_text_var = proposal_text_variance(rec.text_similarities)
         norm_visual_var = min(1.0, float(proto["sigma_visual"]))
         w = gate.weight(norm_text_var, norm_visual_var, affinity)
         results.append(
@@ -175,6 +182,11 @@ def _run_mode_a(records, prototype_payload, gate: ModeAGate) -> list[dict]:
                 "bbox": rec.bbox.tolist(),
                 "gate_weight": float(w),
                 "affinity": float(affinity),
+                # Per-proposal variance terms consumed by 04_evaluate.py's
+                # D1/D2 arrays (backward compatible: absent keys fall back to
+                # the old neutral 0.5).
+                "norm_text_var": float(norm_text_var),
+                "norm_visual_var": float(norm_visual_var),
             }
         )
     return results

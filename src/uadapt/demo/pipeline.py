@@ -5,7 +5,8 @@ real cache when available):
 
     1. visual prototypes        -> build_visual_prototypes (real code)
     2. text uncertainty         -> normalized_text_variance on template
-                                   embeddings (or 0.5 placeholder in real mode)
+                                   embeddings (synthetic) or per-proposal
+                                   class-similarity entropy (real cache)
     3. per-proposal signals     -> s_text, affinity (s_visual), normalized
                                    variances (min-max or absolute scaling,
                                    per ``norm_strategy``), gate weight
@@ -49,6 +50,8 @@ from uadapt.uncertainty.variance_estimators import (
     absolute_normalize,
     min_max_normalize,
     normalized_text_variance,
+    proposal_text_variance,
+    proposal_visual_variance,
     visual_affinity,
 )
 
@@ -131,12 +134,50 @@ def run_demo(
             c: normalized_text_variance(np.asarray(template_embeddings[c]))
             for c in classes
         }
+        norm_text = _normalize_class_values(sigma_text, classes, norm_strategy)
+        sigma_visual = {c: protos[c].sigma_visual for c in classes}
+        norm_visual = _normalize_class_values(sigma_visual, classes, norm_strategy)
     else:
-        sigma_text = {c: 0.5 for c in classes}
-    sigma_visual = {c: protos[c].sigma_visual for c in classes}
+        # REAL-cache mode: no prompt-template ensemble is cached, and the old
+        # class-constant 0.5 placeholder left D1 with ZERO input variance
+        # (pooled D1/D2/D3 = 0.000 on the n=10 pilot). We use the per-proposal
+        # estimators (``proposal_text_variance`` entropy / box-to-support
+        # distance) — continuous signals — see change_log.md 2026-08-05.
+        norm_text = None
+        norm_visual = None
 
-    norm_text = _normalize_class_values(sigma_text, classes, norm_strategy)
-    norm_visual = _normalize_class_values(sigma_visual, classes, norm_strategy)
+    # REAL-cache mode per-proposal visual variance: mean (1 - cos) between
+    # the box feature and the class support set (continuous in [0, 2]),
+    # normalized once over the scored proposals with the configured strategy.
+    # Like the text term, this replaces the class-constant value that
+    # underpowered D2 at C=3 distinct values. The RAW values are kept too:
+    # D5 (Taylor-validity sentinel) must be computed on the absolute scale
+    # (raw / 2.0) — min-max normalization would spread any distribution
+    # across [0, 1] by construction and defeat the clustering flag.
+    real_prop_text: Optional[Dict[int, float]] = None
+    real_prop_visual: Optional[Dict[int, float]] = None
+    real_prop_visual_raw: Optional[Dict[int, float]] = None
+    if template_embeddings is None:
+        scored = [rec for rec in test_records if rec.class_name in protos]
+        real_prop_text = {
+            id(r): proposal_text_variance(r.text_similarities) for r in scored
+        }
+        raw_visual = np.asarray(
+            [
+                proposal_visual_variance(
+                    r.visual_feature, protos[r.class_name].support_features
+                )
+                for r in scored
+            ],
+            dtype=float,
+        )
+        norm_raw_visual = _normalize_proposal_values(raw_visual, norm_strategy)
+        real_prop_visual = {
+            id(r): float(v) for r, v in zip(scored, norm_raw_visual)
+        }
+        real_prop_visual_raw = {
+            id(r): float(v) for r, v in zip(scored, raw_visual)
+        }
 
     gate = ModeAGate(alpha=alpha, beta=beta, gamma=gamma)
     gt_by = _index_gt(ground_truth)
@@ -149,12 +190,30 @@ def run_demo(
         affinity = visual_affinity(rec.visual_feature, proto.centroid)
         s_text = _class_text_score(rec)
         s_visual = affinity
-        nt = float(norm_text[rec.class_name])
-        nv = float(norm_visual[rec.class_name])
+        gt_correct = _gt_match(rec, gt_by)
+        raw_text = None
+        raw_visual_dist = None
+        if template_embeddings is not None:
+            nt = float(norm_text[rec.class_name])
+            nv = float(norm_visual[rec.class_name])
+            text_correct = bool(
+                np.argmax(rec.text_similarities) == _class_index(rec)
+            )
+        else:
+            # REAL-cache mode: per-proposal uncertainties + a NON-tautological
+            # text-correctness label. The backbone assigns
+            # class_name = argmax(text_similarities), so comparing the argmax
+            # to class_name is always True; "text correct" instead means the
+            # text modality's top-1 class matches a GT box (IoU >= 0.5) — for
+            # the cached proposals this is exactly gt_correct.
+            nt = float(real_prop_text[id(rec)])          # type: ignore[index]
+            nv = float(real_prop_visual[id(rec)])        # type: ignore[index]
+            text_correct = bool(gt_correct)
+            # Raw per-proposal values for the honest D5 sentinel (see above).
+            raw_text = nt  # entropy is self-normalized to [0, 1]
+            raw_visual_dist = float(real_prop_visual_raw[id(rec)])  # type: ignore[index]
         w = gate.weight(nt, nv, affinity)
         fused = fuse_scores(s_text, s_visual, w)
-        gt_correct = _gt_match(rec, gt_by)
-        text_correct = bool(np.argmax(rec.text_similarities) == _class_index(rec))
         visual_correct = affinity >= VISUAL_CORRECT_AFFINITY
         rows.append(
             {
@@ -167,6 +226,8 @@ def run_demo(
                 "affinity": float(affinity),
                 "norm_text_var": nt,
                 "norm_visual_var": nv,
+                "text_entropy": raw_text,       # None in synthetic mode
+                "visual_distance_raw": raw_visual_dist,  # None in synthetic mode
                 "w": float(w),
                 "fused": float(fused),
                 "naive": float(fuse_scores(s_text, s_visual, 0.5)),
@@ -228,8 +289,22 @@ def run_demo(
     text_better = text_ok & ~visual_ok
     visual_better = visual_ok & ~text_ok
 
-    d1 = d1_text_uncertainty_accuracy(tv, text_ok)
-    d2 = d2_visual_uncertainty_accuracy(vv, visual_ok)
+    # D1/D2 correctness: the PRE-REGISTERED proposal correctness
+    # (IoU >= 0.5 with same-class GT = gt_correct), matching the diagnostics
+    # module spec and scripts/04_evaluate.py. The synthetic demo keeps the
+    # per-modality flags it was engineered around; on the REAL cache the
+    # per-modality labels are degenerate — text_ok == gt_correct by
+    # construction (the backbone's class_name is the text argmax) and the
+    # affinity threshold (0.65) saturates on RoI-pooled features (every
+    # n=10-pilot proposal had affinity >= 0.87), which would leave D2 with a
+    # constant correctness array (rho = 0). D3 keeps the per-modality
+    # disagreeing subsets either way (change_log.md 2026-08-05).
+    if template_embeddings is not None:
+        d1 = d1_text_uncertainty_accuracy(tv, text_ok)
+        d2 = d2_visual_uncertainty_accuracy(vv, visual_ok)
+    else:
+        d1 = d1_text_uncertainty_accuracy(tv, correct)
+        d2 = d2_visual_uncertainty_accuracy(vv, correct)
     d3 = d3_gate_favorability(w_arr[text_better], w_arr[visual_better])
     diagnostics = {
         "D1_text_uncertainty_accuracy": {
@@ -275,6 +350,18 @@ def run_demo(
         "n_scored_proposals": len(rows),
         "classes": classes,
         "norm_strategy": norm_strategy,
+        # Which uncertainty estimators produced the per-proposal variance
+        # terms (auditability; change_log.md 2026-08-05).
+        "text_uncertainty_estimator": (
+            "template_ensemble_variance"
+            if template_embeddings is not None
+            else "class_similarity_entropy"
+        ),
+        "visual_uncertainty_estimator": (
+            "support_dispersion"
+            if template_embeddings is not None
+            else "box_to_support_distance"
+        ),
     }
 
     return DemoResults(
@@ -323,6 +410,35 @@ def _normalize_class_values(
             f"unknown norm_strategy {norm_strategy!r} (choices: min-max, absolute)"
         )
     return {c: float(norm[i]) for i, c in enumerate(classes)}
+
+
+def _normalize_proposal_values(
+    raw: np.ndarray, norm_strategy: str = "min-max"
+) -> np.ndarray:
+    """Scale per-proposal raw variance values (cosine distances in [0, 2]) to
+    [0, 1] with the configured strategy.
+
+    ``absolute`` divides by the fixed cosine-distance max
+    (``COSINE_DISTANCE_MAX`` = 2.0, class-count-independent); ``min-max`` uses
+    the proposal-level statistics of THIS dataset. Constant or empty inputs
+    map to the neutral 0.5 / stay empty so degenerate runs stay finite. The
+    per-proposal TEXT estimator (``proposal_text_variance``) is
+    self-normalizing (entropy / ln C, already in [0, 1]) and is therefore not
+    routed through here — this function exists for the cosine-distance
+    terms.
+    """
+    raw = np.asarray(raw, dtype=float)
+    if raw.size == 0:
+        return raw
+    if norm_strategy == "absolute":
+        return absolute_normalize(raw, scale=COSINE_DISTANCE_MAX)
+    if norm_strategy == "min-max":
+        if np.ptp(raw) < 1e-12:
+            return np.full_like(raw, 0.5)
+        return min_max_normalize(raw)
+    raise ValueError(
+        f"unknown norm_strategy {norm_strategy!r} (choices: min-max, absolute)"
+    )
 
 
 def _class_index(rec: FeatureRecord) -> int:

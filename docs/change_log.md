@@ -4,6 +4,78 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-05 — Per-proposal real-data uncertainty estimators fix pooled D1/D2/D3 = 0.000 (deviation on pre-registration §2 / §7.6)
+
+- **Root cause (investigated on the n=10 pilot).** The pooled D1/D2/D3 were
+  all 0.000 for four structural reasons, not one:
+  1. `norm_text_var = 0.5` **placeholder** (constant input → D1 had no
+     variance);
+  2. `text_correct = argmax(sims) == class_name` was **tautologically True**
+     (the backbone assigns `class_name = argmax(text_similarities)`);
+  3. `visual_correct` (affinity ≥ 0.65) was **saturated** on real RoI-pooled
+     features — every pilot proposal had affinity ≥ 0.87, so D2's
+     correctness label carried no information;
+  4. class-level variance terms (C distinct values) underpower D1/D2 even
+     pooled at C=3.
+- **Real per-proposal estimators added**
+  (`src/uadapt/uncertainty/variance_estimators.py`, exported from
+  `src/uadapt/uncertainty/__init__.py`):
+  - `proposal_text_variance` — normalized entropy of the per-box
+    class-similarity vector (relative weights), continuous in [0, 1];
+    replaces the 0.5 placeholder on the real-cache path (`pipeline.py`,
+    `scripts/03_run_fusion.py` which also now emits `norm_text_var` /
+    `norm_visual_var` consumed by `scripts/04_evaluate.py`).
+  - `proposal_visual_variance` — mean (1 − cos) between the box feature and
+    the class support set, continuous in [0, 2]; replaces the class-level
+    `sigma_visual` in `pipeline.py`'s real-cache mode (support features are
+    available in-memory from the prototype builder).
+- **Non-tautological `text_correct`.** On the real cache, "text correct" is
+  the text modality's top-1 class matching a GT box (IoU ≥ 0.5) — identical
+  to `gt_correct`; the old argmax==class_name check is always True by
+  construction.
+- **D1/D2 correctness aligned with the PRE-REGISTRATION** (proposal
+  correctness = `gt_correct`, already the convention in
+  `scripts/04_evaluate.py` and the diagnostics module docstring). The
+  synthetic demo keeps its per-modality flags (it is a mechanism demo); the
+  real-cache path evaluates D1/D2 against `gt_correct` because the
+  per-modality labels are degenerate there (tautological text flag +
+  saturated affinity threshold). D3 keeps the per-modality disagreeing
+  subsets either way. `scripts/compute_pooled_diagnostics.py` updated to the
+  same convention; both estimators are recorded in `results.json` meta
+  (`text_uncertainty_estimator` / `visual_uncertainty_estimator`).
+- **Verified on the n=10 pilot** (real Grounding DINO features; pooled
+  LADD + D-Fire, n=44 proposals): the structural zeros are gone —
+  **D1 ρ = −0.339** (flat-sim proposals were MORE often correct at this
+  scale — an honest pilot-scale finding, sign to be re-checked at full
+  scale), **D2 ρ = +0.175** (boxes far from the support set more often
+  wrong — the expected direction), **D3 favorability = 94.1%
+  (p = 0.0003, n=17)**. Pilot-scale numbers only; the full run is required
+  for research claims. Report regenerated at `docs/real_data_results_pilot.md`.
+- **D5 sentinel runs on the absolute scale now.** The raw per-proposal
+  values (`text_entropy`, `visual_distance_raw`) are persisted in
+  `proposal_level.json`; `compute_pooled_diagnostics.py` computes D5 from
+  `text_entropy` and `visual_distance_raw / 2.0`. Min-max normalization
+  spreads any array across [0, 1] BY CONSTRUCTION and would silently defeat
+  the Taylor-validity flag — exactly where it matters. On the pilot, D5
+  FLAGGED both datasets on the absolute scale (LADD frac ≈ 1.0 — the
+  single-class text entropy is 0; D-Fire frac ≈ 0.88), triggering the
+  pre-registered **Beta-regression fallback** contingency — the sentinel
+  working as designed.
+- **Caveats (pilot scale):** (1) pooled D2 mixes per-dataset normalization
+  scales (LADD min-max, D-Fire absolute) — pooled ranks are a hybrid;
+  per-dataset values remain reported and the full run should re-examine
+  both. (2) D3's disagreeing subsets are one-sided at n=10 (the affinity
+  threshold never fails on this pilot, so `text_better` is empty) — D3
+  n=17 is therefore the visual-better side only; the full run will rebalance
+  it.
+- **Tests** — `tests/test_variance_estimators.py` (11 tests: entropy
+  boundary/continuity/edge cases, box-to-support distance incl. the k=1 and
+  empty-support semantics) plus a real-mode pipeline signal test in
+  `tests/test_demo_mode_a.py` (per-proposal continuous variances, non-
+  tautological `text_correct`, D1 ρ > 0.3 and D2 ρ > 0.2 against
+  `gt_correct`, D3 subsets non-empty with gate favorability > 0.6, estimator
+  names in meta). Full suite: **125 passing** (was 108).
+
 ## 2026-08-05 — Milestone 1 executed: real-data n=10 pilot runs end-to-end (issues #3)
 
 - **Environment set up** — `torch` + `transformers` installed in the project
@@ -44,15 +116,13 @@ section of `docs/pre_registration.md`.
 
   Report: `docs/real_data_results_pilot.md` (self-labeled **"PILOT RESULTS
   (n=10 images)"**; superseded by the full-data run).
-- **Pooled D1/D2/D3 = 0.000 on the pilot — honest, diagnosable finding.** The
-  real-cache path still uses the documented 0.5 text-variance placeholder,
-  per-class variances are structurally near-constant at 3 classes, and
-  `text_correct` is tautological while the backbone assigns
-  `class_name = argmax(text_sims)`. This is exactly the failure mode the
-  pre-registration caveats anticipate (limited per-class variance ⇒ no
-  correlation signal; D5 is the sentinel for variance clustering on real
-  data). No claim is made from the pilot diagnostics; they validate the
-  plumbing only.
+- **Pooled D1/D2/D3 = 0.000 on the pilot — root-caused and FIXED in the
+  entry below (2026-08-05, per-proposal estimators).** The causes were: the
+  documented 0.5 text-variance placeholder, the tautological `text_correct`
+  (backbone sets `class_name = argmax(text_sims)`), the saturated affinity
+  threshold (every pilot proposal ≥ 0.87), and the class-level granularity
+  of the variance terms. See the per-proposal-estimator entry above for the
+  fix and the post-fix pilot values (D1 −0.339 / D2 +0.175 / D3 94.1%).
 - **Tests** — `tests/test_backbone_loader.py` (9 unit tests for
   `_class_token_spans`, `_roi_mean_feature`, `resolve_device` without
   torch/transformers). Full suite: **108 passing**.

@@ -282,3 +282,150 @@ def test_figure5_schematic_fallback_without_paths(results, dataset):
         assert "schematic" in note
     finally:
         plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# REAL-cache mode: per-proposal uncertainty estimators give D1/D2/D3 signal
+# (change_log.md 2026-08-05 — replaces the 0.5 placeholder path)
+# ---------------------------------------------------------------------------
+def _real_mode_world(seed: int = 7):
+    """Build a real-like world (FeatureRecords WITHOUT template embeddings).
+
+    Four groups of proposals engineer the exact regime the per-proposal
+    estimators must capture (sizes 40/40/20/20 so D1/D2 keep power despite
+    the disagreeing groups):
+
+      * text confident  -> sharp class similarities (low entropy)
+      * text unreliable -> flat similarities (high entropy)
+      * visual reliable -> box AT its class support (near feature, low
+                           box-to-support distance)
+      * visual weak     -> box OPPOSITE the class centroid (affinity ~ 0)
+
+    Group layout (text_ok = gt_correct, visual_ok = affinity >= 0.65):
+      0. text+visual ok      sharp, near,  GT present   (40)
+      1. text+visual wrong   flat,  far,   no GT        (40)
+      2. text ok, vis wrong  sharp, far,   GT present   (20)  -> text better
+      3. text wrong, vis ok  flat,  near,  no GT        (20)  -> visual better
+
+    With D1/D2 evaluated against the PRE-REGISTERED proposal correctness
+    (gt_correct): low-entropy text and low box-to-support distance both
+    predict correctness (D1 rho ~ 1, D2 rho ~ 0.33), while the disagreeing
+    groups keep D3's subsets non-empty.
+    """
+    from uadapt.features.cache_engine import FeatureRecord
+
+    rng = np.random.default_rng(seed)
+    classes = ["person", "fire", "smoke"]
+    D = 8
+    dirs = np.zeros((3, D))
+    dirs[0, :3] = 1.0
+    dirs[1, 3:6] = 1.0
+    dirs[2, 6:] = 1.0
+    centroid = {c: d / np.linalg.norm(d) for c, d in zip(classes, dirs)}
+
+    def near(c):
+        f = centroid[c] + 0.01 * rng.normal(size=D)
+        return f / np.linalg.norm(f)
+
+    def far(c):
+        # Opposite the class centroid: affinity ~ 0 (< 0.65 -> visual weak),
+        # box-to-support distance near its max.
+        return -centroid[c]
+
+    def sharp(c):
+        s = np.full(3, 0.07)
+        s[classes.index(c)] = 0.85
+        return s
+
+    def flat():
+        return np.full(3, 0.34)
+
+    # Support pool (train) — 6 near records per class -> the prototype.
+    train = []
+    for c in classes:
+        for j in range(6):
+            train.append(
+                FeatureRecord(
+                    image_id=f"train_{c}_{j}", class_name=c, score=0.6,
+                    bbox=np.array([0, 0, 10, 10], dtype=np.float32),
+                    visual_feature=near(c).astype(np.float32),
+                    text_similarities=sharp(c).astype(np.float32),
+                    classes=classes,
+                )
+            )
+
+    test, gt = [], []
+    # group sizes: 0 -> 40, 1 -> 40, 2 -> 20, 3 -> 20
+    for group, n_grp in ((0, 40), (1, 40), (2, 20), (3, 20)):
+        for _ in range(n_grp):
+            idx = len(test)
+            c = classes[idx % 3]
+            box = np.array([idx, idx, idx + 10, idx + 10], dtype=np.float32)
+            if group in (0, 2):
+                gt.append({"image_id": f"img_{idx}", "class": c, "bbox": box.tolist()})
+            if group == 0:      # text+visual ok
+                sims, feat = sharp(c), near(c)
+            elif group == 1:    # both wrong
+                sims, feat = flat(), far(c)
+            elif group == 2:    # text ok, visual weak
+                sims, feat = sharp(c), far(c)
+            else:               # text wrong, visual ok
+                sims, feat = flat(), near(c)
+            test.append(
+                FeatureRecord(
+                    image_id=f"img_{idx}", class_name=c, score=0.6, bbox=box,
+                    visual_feature=feat.astype(np.float32),
+                    text_similarities=sims.astype(np.float32),
+                    classes=classes,
+                )
+            )
+    return train, test, gt, classes
+
+
+def test_real_mode_per_proposal_variance_gives_diagnostics_signal():
+    train, test, gt, classes = _real_mode_world()
+    res = run_demo(
+        train_records=train, test_records=test, ground_truth=gt,
+        classes=classes, template_embeddings=None, shots=5, seed=0,
+        norm_strategy="min-max",
+    )
+    rows = res.proposal_level
+    assert len(rows) == 120
+
+    tv = np.asarray([r["norm_text_var"] for r in rows], dtype=float)
+    vv = np.asarray([r["norm_visual_var"] for r in rows], dtype=float)
+    tc = np.asarray([r["text_correct"] for r in rows], dtype=bool)
+    vc = np.asarray([r["visual_correct"] for r in rows], dtype=bool)
+
+    # Per-proposal, continuous (NOT the class-constant 0.5 placeholder).
+    assert np.ptp(tv) > 0.2
+    assert np.ptp(vv) > 0.2
+    assert np.all((tv >= 0.0) & (tv <= 1.0))
+    assert np.all((vv >= 0.0) & (vv <= 1.0))
+
+    # text_correct is NON-tautological: real misses exist and correlate with
+    # entropy (high-entropy flat-sim proposals are the wrong ones).
+    assert 0.4 < tc.mean() < 0.7
+    assert vc.mean() > 0.0
+
+    d1 = res.diagnostics["D1_text_uncertainty_accuracy"]["summary"]
+    d2 = res.diagnostics["D2_visual_uncertainty_accuracy"]["summary"]
+    d3 = res.diagnostics["D3_gate_favorability"]["summary"]
+    # D1/D2 use the pre-registered proposal correctness (gt_correct).
+    assert d1["spearman_rho"] > 0.3
+    assert d2["spearman_rho"] > 0.2
+    # Both disagreeing subsets are non-empty and the gate favors the better
+    # modality (text-better -> w < 0.5, visual-better -> w > 0.5).
+    assert d3["n"] == pytest.approx(40.0)
+    assert d3["favorability_fraction"] > 0.6
+
+    # meta records WHICH estimator produced the terms (auditability).
+    assert res.meta["text_uncertainty_estimator"] == "class_similarity_entropy"
+    assert res.meta["visual_uncertainty_estimator"] == "box_to_support_distance"
+
+
+def test_real_mode_meta_estimators_on_synthetic_path(results):
+    # The synthetic path keeps the template-ensemble / support-dispersion
+    # estimators (backward compatible).
+    assert results.meta["text_uncertainty_estimator"] == "template_ensemble_variance"
+    assert results.meta["visual_uncertainty_estimator"] == "support_dispersion"

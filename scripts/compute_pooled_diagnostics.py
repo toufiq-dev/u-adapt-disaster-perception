@@ -17,10 +17,14 @@ This script consumes the outputs of ``demo_mode_a_end_to_end.py``:
                                   text/visual correctness flags, gate weights)
 
 and computes the pooled diagnostics with the ``pool_with`` functionality in
-``src/uadapt/metrics/diagnostics.py`` (same conventions as
-``src/uadapt/demo/pipeline.py``: D1 correlates text uncertainty with the
-TEXT modality's correctness, D2 visual uncertainty with the VISUAL modality's
-correctness, D3 uses the disagreeing-proposal weight subsets).
+``src/uadapt/metrics/diagnostics.py``. Correctness follows the
+PRE-REGISTRATION (and ``scripts/04_evaluate.py``): D1/D2 correlate each
+variance term with the per-proposal correctness ``gt_correct``
+(IoU >= 0.5 with same-class GT). On the real-cache path the per-modality
+flags are degenerate (text_ok == gt_correct by construction; the affinity
+threshold saturates on RoI features) — see pipeline.py and change_log.md
+2026-08-05. D3 uses the disagreeing-proposal weight subsets
+(text_correct vs visual_correct flags).
 
 Usage:
     python scripts/compute_pooled_diagnostics.py \\
@@ -102,12 +106,15 @@ def _load_dataset(name: str, results_path: Path, proposals_path: Optional[Path])
             f"{proposals_path} contains no proposals; cannot compute diagnostics"
         )
     required = {"norm_text_var", "norm_visual_var", "w",
-                "text_correct", "visual_correct", "gt_correct"}
+                "text_correct", "visual_correct", "gt_correct",
+                # raw per-proposal values for the honest D5 sentinel
+                "text_entropy", "visual_distance_raw"}
     missing = required - set(proposals[0].keys())
     if missing:
         raise ValueError(
             f"{proposals_path} rows are missing required fields {sorted(missing)}; "
-            "expected the proposal_level.json written by demo_mode_a_end_to_end.py"
+            "expected the proposal_level.json written by demo_mode_a_end_to_end.py "
+            "(re-run it — the raw per-proposal fields were added 2026-08-05)"
         )
     return {
         "name": name,
@@ -125,11 +132,19 @@ def _extract_arrays(ds: Dict) -> Dict[str, np.ndarray]:
         "norm_visual_var": np.asarray([r["norm_visual_var"] for r in rows], dtype=float),
         "text_ok": np.asarray([r["text_correct"] for r in rows], dtype=bool),
         "visual_ok": np.asarray([r["visual_correct"] for r in rows], dtype=bool),
-        # gt_correct (IoU-based proposal correctness) is kept for reference;
-        # the D1/D2 diagnostics follow pipeline.py and use the per-modality
-        # text_correct / visual_correct flags (04_evaluate.py uses gt_correct).
+        # gt_correct (IoU-based proposal correctness) is the PRE-REGISTERED
+        # D1/D2 correctness label (matches 04_evaluate.py). The per-modality
+        # flags drive D3's disagreeing subsets only.
         "gt_correct": np.asarray([r["gt_correct"] for r in rows], dtype=bool),
         "w": np.asarray([r["w"] for r in rows], dtype=float),
+        # RAW per-proposal values for the D5 sentinel: D5 must run on the
+        # absolute scale (text entropy in [0, 1]; visual distance / 2.0) —
+        # min-max normalized arrays are spread across [0, 1] BY CONSTRUCTION
+        # and would defeat the Taylor-validity clustering flag (2026-08-05).
+        "text_entropy": np.asarray([r["text_entropy"] for r in rows], dtype=float),
+        "visual_distance_raw": np.asarray(
+            [r["visual_distance_raw"] for r in rows], dtype=float
+        ),
     }
 
 
@@ -152,10 +167,18 @@ def _per_dataset_diagnostics(a: Dict[str, np.ndarray]) -> Dict:
 
     text_better = a["text_ok"] & ~a["visual_ok"]
     visual_better = a["visual_ok"] & ~a["text_ok"]
-    d1 = d1_text_uncertainty_accuracy(a["norm_text_var"], a["text_ok"])
-    d2 = d2_visual_uncertainty_accuracy(a["norm_visual_var"], a["visual_ok"])
+    # D1/D2 use the pre-registered proposal correctness (gt_correct) — the
+    # per-modality flags are degenerate on the real cache (pipeline.py,
+    # change_log.md 2026-08-05); D3 keeps the disagreeing subsets.
+    d1 = d1_text_uncertainty_accuracy(a["norm_text_var"], a["gt_correct"])
+    d2 = d2_visual_uncertainty_accuracy(a["norm_visual_var"], a["gt_correct"])
     d3 = d3_gate_favorability(a["w"][text_better], a["w"][visual_better])
-    d5 = d5_variance_distribution(a["norm_text_var"], a["norm_visual_var"])
+    # D5 on the ABSOLUTE scale (raw values): text entropy is already in
+    # [0, 1]; the raw box-to-support distance (range [0, 2]) is divided by
+    # its max. Min-max normalized arrays would defeat the sentinel.
+    d5 = d5_variance_distribution(
+        a["text_entropy"], a["visual_distance_raw"] / 2.0
+    )
     return {
         D1: _diag_dict(d1),
         D2: _diag_dict(d2),
@@ -192,13 +215,15 @@ def main() -> None:
 
     # Pooled D1/D2/D3 — PRIMARY claim (deviation 2026-08-03, §10). LADD is the
     # primary dataset, D-Fire the secondary (matches 04_evaluate defaults).
+    # Correctness = pre-registered proposal correctness (gt_correct), per the
+    # pipeline/04_evaluate convention (change_log.md 2026-08-05).
     d1 = d1_text_uncertainty_accuracy(
-        la["norm_text_var"], la["text_ok"],
-        pool_with=(da["norm_text_var"], da["text_ok"]),
+        la["norm_text_var"], la["gt_correct"],
+        pool_with=(da["norm_text_var"], da["gt_correct"]),
     )
     d2 = d2_visual_uncertainty_accuracy(
-        la["norm_visual_var"], la["visual_ok"],
-        pool_with=(da["norm_visual_var"], da["visual_ok"]),
+        la["norm_visual_var"], la["gt_correct"],
+        pool_with=(da["norm_visual_var"], da["gt_correct"]),
     )
     l_text_better = la["text_ok"] & ~la["visual_ok"]
     l_visual_better = la["visual_ok"] & ~la["text_ok"]
