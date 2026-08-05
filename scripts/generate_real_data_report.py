@@ -197,6 +197,23 @@ def _diag_value_table(pooled: Dict, per_dataset: Dict) -> List[str]:
                 f"(binomial p = {s.get('binomial_pvalue', float('nan')):.3g}) | "
                 f"{s.get('n', 0):.0f} |"
             )
+    # D1 pooled-sign caveat (2026-08-05): the pooled Spearman rho mixes two
+    # datasets at different error base rates whose text-entropy ranges are
+    # structurally disjoint (LADD is single-class -> entropy 0.0 by
+    # construction; D-Fire sits near max entropy). The pooled sign is
+    # therefore dominated by the BETWEEN-dataset base-rate difference rather
+    # than by a within-proposal uncertainty-accuracy relationship; the
+    # within-dataset D1 is the interpretable diagnostic on real data.
+    lines += [
+        "",
+        "> ⚠️ **D1 pooled-sign caveat (2026-08-05):** the pooled D1 Spearman ρ "
+        "mixes LADD and D-Fire at different error base rates with structurally "
+        "different text-entropy ranges (LADD is single-class → entropy 0.0 by "
+        "construction; D-Fire sits near max entropy). The pooled sign is "
+        "dominated by this **between-dataset base-rate difference**, not by a "
+        "within-proposal uncertainty–accuracy relationship (per-dataset D1 is "
+        "the interpretable signal). See `docs/change_log.md` 2026-08-05.",
+    ]
     # Per-dataset D1/D2/D3 for reporting.
     lines += ["", "Per-dataset values (reported; pooled is primary):", "",
               "| Dataset | D1 ρ | D2 ρ | D3 favorability |", "|---|---|---|---|"]

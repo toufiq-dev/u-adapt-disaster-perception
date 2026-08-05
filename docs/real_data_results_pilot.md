@@ -65,6 +65,8 @@ D-Fire alone has 2 classes → only 2 distinct variance values, so D1/D2/D3 on i
 | D2 — visual uncertainty–accuracy | Spearman ρ = **+0.175** (ok) | 44 |
 | D3 — gate favorability | favorability = **94.1%** (binomial p = 0.000275) | 17 |
 
+> ⚠️ **D1 pooled-sign caveat (2026-08-05):** the pooled D1 Spearman ρ mixes LADD and D-Fire at different error base rates with structurally different text-entropy ranges (LADD is single-class → entropy 0.0 by construction; D-Fire sits near max entropy). The pooled sign is dominated by this **between-dataset base-rate difference**, not by a within-proposal uncertainty–accuracy relationship (per-dataset D1 is the interpretable signal). See `docs/change_log.md` 2026-08-05.
+
 Per-dataset values (reported; pooled is primary):
 
 | Dataset | D1 ρ | D2 ρ | D3 favorability |

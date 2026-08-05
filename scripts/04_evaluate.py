@@ -219,8 +219,25 @@ def _diag_arrays(preds: List[Dict], correct: np.ndarray) -> Dict[str, np.ndarray
     since change_log 2026-08-05; when a predictions file predates that
     (or was produced by a path without the terms), the old neutral 0.5 is
     kept so the machinery stays runnable.
+
+    D3's disagreeing subsets follow the pipeline /
+    compute_pooled_diagnostics.py convention (change_log 2026-08-05):
+    ``text_ok`` = the text modality's top-1 class matched a GT box
+    (== ``correct`` on the real path) and ``visual_ok`` = affinity
+    >= ``VISUAL_CORRECT_AFFINITY`` (0.65, the same pre-registered threshold
+    as ``src/uadapt/demo/pipeline.py``). Explicit per-proposal
+    ``text_correct`` / ``visual_correct`` fields win when a predictions file
+    carries them; otherwise they are derived here so the disagreement
+    subsets stay defined for any input. Note: a predictions file WITHOUT
+    ``affinity`` degrades ``visual_ok`` to all-False (one-sided text-only
+    subset) — well-defined, but unlike the old w-split which was trivially
+    favorable by construction.
     """
-    n = len(preds)
+    # Pre-registered D3 convention (demos/pipeline.py defines the canonical
+    # VISUAL_CORRECT_AFFINITY; kept local here so this standalone eval script
+    # does not import the demo module).
+    VISUAL_CORRECT_AFFINITY = 0.65
+
     return {
         "norm_text_var": np.asarray(
             [p.get("norm_text_var", 0.5) for p in preds], dtype=float
@@ -228,9 +245,25 @@ def _diag_arrays(preds: List[Dict], correct: np.ndarray) -> Dict[str, np.ndarray
         "norm_visual_var": np.asarray(
             [p.get("norm_visual_var", 0.5) for p in preds], dtype=float
         ),
-        "affinities": np.asarray([p.get("affinity", 0.5) for p in preds], dtype=float),
+        # Single fallback for a missing affinity (0.0 = "not visual"), used by
+        # both D4's binning and the D3 visual_ok derivation below.
+        "affinities": np.asarray([p.get("affinity", 0.0) for p in preds], dtype=float),
         "w": np.asarray([p.get("gate_weight", 0.5) for p in preds], dtype=float),
         "correct": np.asarray(correct, dtype=bool),
+        # D3 disagreeing subsets (pipeline / compute_pooled convention).
+        "text_ok": np.asarray(
+            [p.get("text_correct", c) for p, c in zip(preds, correct)], dtype=bool
+        ),
+        "visual_ok": np.asarray(
+            [
+                p.get(
+                    "visual_correct",
+                    p.get("affinity", 0.0) >= VISUAL_CORRECT_AFFINITY,
+                )
+                for p in preds
+            ],
+            dtype=bool,
+        ),
     }
 
 
@@ -264,7 +297,14 @@ def _per_dataset_dict(
     a = arr if arr is not None else _diag_arrays(preds, correct)
     d1 = d1_text_uncertainty_accuracy(a["norm_text_var"], a["correct"])
     d2 = d2_visual_uncertainty_accuracy(a["norm_visual_var"], a["correct"])
-    d3 = d3_gate_favorability(a["w"][a["w"] < 0.5], a["w"][a["w"] > 0.5])
+    # D3: disagreeing-proposal weight subsets, aligned with the pipeline /
+    # compute_pooled convention (change_log 2026-08-05). The previous
+    # w < 0.5 / w > 0.5 split counted every proposal as favorable by
+    # construction (any weight is on one side of 0.5), so D3 could never
+    # drop below 100% — it measured nothing.
+    text_better = a["text_ok"] & ~a["visual_ok"]
+    visual_better = a["visual_ok"] & ~a["text_ok"]
+    d3 = d3_gate_favorability(a["w"][text_better], a["w"][visual_better])
     d4 = d4_affinity_diagnostic(a["w"], np.full_like(a["w"], 0.5), a["affinities"])
     # NOTE (2026-08-05): this D5 runs on the normalized arrays carried in the
     # predictions JSON, while compute_pooled_diagnostics.py runs D5 on the raw
@@ -324,10 +364,15 @@ def _run_diagnostics(
         pa["norm_visual_var"], pa["correct"],
         pool_with=(sa["norm_visual_var"], sa["correct"]),
     )
-    w1, w2 = pa["w"], sa["w"]
+    # D3 pooled on the disagreeing-proposal weight subsets of BOTH datasets
+    # (same convention as the per-dataset path, change_log 2026-08-05).
+    p_text_better = pa["text_ok"] & ~pa["visual_ok"]
+    p_visual_better = pa["visual_ok"] & ~pa["text_ok"]
+    s_text_better = sa["text_ok"] & ~sa["visual_ok"]
+    s_visual_better = sa["visual_ok"] & ~sa["text_ok"]
     d3 = d3_gate_favorability(
-        w1[w1 < 0.5], w1[w1 > 0.5],
-        pool_with=(w2[w2 < 0.5], w2[w2 > 0.5]),
+        pa["w"][p_text_better], pa["w"][p_visual_better],
+        pool_with=(sa["w"][s_text_better], sa["w"][s_visual_better]),
     )
     return {
         "primary": _per_dataset_dict(preds, correct, arr=pa),

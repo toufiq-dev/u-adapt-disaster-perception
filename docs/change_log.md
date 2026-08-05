@@ -45,11 +45,11 @@ section of `docs/pre_registration.md`.
   (`text_uncertainty_estimator` / `visual_uncertainty_estimator`).
 - **Verified on the n=10 pilot** (real Grounding DINO features; pooled
   LADD + D-Fire, n=44 proposals): the structural zeros are gone —
-  **D1 ρ = −0.339** (flat-sim proposals were MORE often correct at this
-  scale — an honest pilot-scale finding, sign to be re-checked at full
-  scale), **D2 ρ = +0.175** (boxes far from the support set more often
-  wrong — the expected direction), **D3 favorability = 94.1%
-  (p = 0.0003, n=17)**. Pilot-scale numbers only; the full run is required
+  **D1 ρ = −0.339**, **D2 ρ = +0.175** (boxes far from the support set more
+  often wrong — the expected direction), **D3 favorability = 94.1%
+  (p = 0.0003, n=17)**. The D1 sign is NOT a genuine finding — a follow-up
+  investigation (entry below, 2026-08-05) showed it is a between-dataset
+  base-rate confound. Pilot-scale numbers only; the full run is required
   for research claims. Report regenerated at `docs/real_data_results_pilot.md`.
 - **D5 sentinel runs on the absolute scale now.** The raw per-proposal
   values (`text_entropy`, `visual_distance_raw`) are persisted in
@@ -75,6 +75,47 @@ section of `docs/pre_registration.md`.
   tautological `text_correct`, D1 ρ > 0.3 and D2 ρ > 0.2 against
   `gt_correct`, D3 subsets non-empty with gate favorability > 0.6, estimator
   names in meta). Full suite: **125 passing** (was 108).
+
+## 2026-08-05 — D1 sign investigation + D3 alignment in 04_evaluate.py (follow-up)
+
+- **The pooled D1 ρ = −0.339 is a BETWEEN-DATASET base-rate confound, not a
+  small-sample artifact or a genuine finding.** Root-cause analysis on the
+  n=10 pilot proposal rows (`outputs/real_data/*/proposal_level.json`,
+  n=44):
+  - **LADD** (n=15) has *structurally constant* text entropy — 0.000 for
+    every proposal, because it is a single-class dataset (entropy of a
+    1-element similarity vector is 0 by construction). Its error base rate
+    on this pilot was 0.667.
+  - **D-Fire** (n=29) sits near max entropy (range [0.666, 0.974]) with a
+    much lower error base rate (0.241); its *within-dataset* D1 ρ is
+    **+0.019** and the binned error rates are flat (0.231 vs 0.250 across
+    bins) — no within-proposal uncertainty–accuracy relationship.
+  - Pooling a (tv=0, err=0.667) population with a (tv≈0.8, err≈0.24)
+    population produces a negative rank correlation across the datasets;
+    **within-dataset centering of the error rates collapses the pooled ρ
+    from −0.339 to −0.001** — the pooled sign is entirely the
+    between-dataset base-rate difference.
+  - **Implication:** flat-sim proposals are NOT genuinely more often
+    GT-correct. The pooled D1 sign is not interpretable as a within-
+    proposal effect while LADD contributes a constant entropy at a different
+    base rate; per-dataset D1 is the interpretable signal on real data (and
+    D1 is uninformative at pilot scale: within-D-Fire ρ ≈ 0). This caveat is
+    now emitted by `scripts/generate_real_data_report.py` next to the pooled
+    diagnostics table and recorded in the pilot report. The pre-registered
+    pooled protocol itself is unchanged (pooled = primary claim, per-dataset
+    still reported); the full run will re-examine both within- and
+    between-dataset structure.
+- **D3 alignment in `scripts/04_evaluate.py`.** The script's D3 previously
+  split gate weights by `w < 0.5` / `w > 0.5`, which counts EVERY proposal
+  as favorable by construction (any weight sits on one side of 0.5) — D3
+  could never drop below 100% and measured nothing. It now uses the same
+  disagreeing-proposal subsets as the pipeline and
+  `compute_pooled_diagnostics.py` (per-modality correctness flags
+  `text_ok` / `visual_ok`, derived in `_diag_arrays` from `gt_correct` and
+  `affinity >= 0.65`; explicit per-proposal `text_correct`/`visual_correct`
+  fields win when present). Both the per-dataset and the pooled paths were
+  aligned. Tests: `tests/test_04_evaluate.py` (3 tests pinning the
+  disagreeing-subset convention incl. the pooled binomial concatenation).
 
 ## 2026-08-05 — Milestone 1 executed: real-data n=10 pilot runs end-to-end (issues #3)
 
