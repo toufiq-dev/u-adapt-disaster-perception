@@ -31,8 +31,9 @@ Notes
   be ranged/partial-downloaded) but copies only the FIRST N sorted images per
   split into ``data/raw`` and writes subset-filtered COCO annotations. This
   keeps the pilot small while the script stays correct for full runs.
-* **D-Fire annotations are YOLO format** (normalized class xc yc w h; classes
-  0=fire, 1=smoke) — this script converts them to COCO-style JSON so the
+* **D-Fire annotations are YOLO format** (normalized class xc yc w h; class
+  order 0=smoke, 1=fire — verified 2026-08-05 against inference, see
+  ``DFIRE_CLASSES``) — this script converts them to COCO-style JSON so the
   evaluation pipeline (``demo_mode_a_end_to_end.py`` / ``04_evaluate.py``)
   can consume them directly.
 * **LADD** — the official GitHub repository (``huyhieupham/LADD``) returned
@@ -71,7 +72,13 @@ DFIRE_PAPER_URL = "https://link.springer.com/article/10.1007/s00521-022-07467-z"
 # (official repo huyhieupham/LADD is offline as of 2026-08-04).
 LADD_URL_PLACEHOLDER = "https://REPLACE_WITH_VERIFIED_LADD_DOWNLOAD_URL"
 
-DFIRE_CLASSES = {0: "fire", 1: "smoke"}  # per the D-Fire paper
+# D-Fire YOLO class order — VERIFIED 2026-08-05 against the mirror labels and
+# a real inference check: the official YOLO label files use class 0 = smoke and
+# class 1 = fire (the Kaggle mirror is literally named "smoke-fire-detection").
+# The paper's summary table lists Fire first, but that is a display order, NOT
+# the YOLO label id order. Using 0=fire,1=smoke here produced 0% mAP with every
+# GT box class-swapped; 0=smoke,1=fire gives the correct match (pilot: 0.821).
+DFIRE_CLASSES = {0: "smoke", 1: "fire"}
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RAW_ROOT = ROOT / "data" / "raw"
@@ -159,15 +166,20 @@ def _walk_images(root: Path) -> List[Path]:
     return sorted(p for p in root.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES)
 
 
-def _find_yolo_label(image: Path) -> Optional[Path]:
+def _find_yolo_label(image: Path, label_root: Optional[Path] = None) -> Optional[Path]:
     """Locate the YOLO .txt label for an image.
 
     Candidates, in order:
+      0. ``label_root/<stem>.txt`` (HF-mirror layout, labels kept separately);
       1. a sibling ``<stem>.txt`` next to the image;
       2. a ``labels/`` directory mirroring the ``images/`` tree
          (labels/a/b/img.txt for images/a/b/img.jpg);
       3. a sibling ``labels/<stem>.txt`` directory.
     """
+    if label_root is not None:
+        cand = label_root / (image.stem + ".txt")
+        if cand.exists():
+            return cand
     cand = image.with_suffix(".txt")
     if cand.exists():
         return cand
@@ -184,12 +196,16 @@ def _find_yolo_label(image: Path) -> Optional[Path]:
     return alt if alt.exists() else None
 
 
-def _yolo_to_coco(images: Sequence[Path], split_name: str) -> Dict:
+def _yolo_to_coco(
+    images: Sequence[Path], split_name: str, label_root: Optional[Path] = None
+) -> Dict:
     """Convert D-Fire YOLO labels to a COCO-style annotation dict.
 
     Each image is emitted with its width/height (read from headers). Missing
     label files are allowed (D-Fire has ~9.8k 'none' images) and yield an
-    empty annotation list. Returns the COCO dict.
+    empty annotation list. ``label_root`` optionally points at a directory
+    holding ``<stem>.txt`` labels separate from the images (HF mirror layout).
+    Returns the COCO dict.
     """
     categories = [
         {"id": cls_id + 1, "name": name} for cls_id, name in sorted(DFIRE_CLASSES.items())
@@ -206,7 +222,7 @@ def _yolo_to_coco(images: Sequence[Path], split_name: str) -> Dict:
                 "width": w,
             }
         )
-        label = _find_yolo_label(img_path)
+        label = _find_yolo_label(img_path, label_root=label_root)
         if label is None:
             continue
         for line in label.read_text().splitlines():
@@ -275,6 +291,236 @@ def _download(url: str, dest: Path, timeout: int = 60) -> bool:
         return False
     tmp.replace(dest)
     return True
+
+
+# HuggingFace mirror of the official D-Fire dataset (verified 2026-08-05):
+#   https://huggingface.co/datasets/badsaarow/d-fire
+# Official repo: gaia-solutions-on-demand/DFireDataset (OneDrive share served
+# HTML to scripts, so the anonymous HF mirror is used for automated download).
+# The mirror holds the real 21,527-image dataset (17,221 train / 4,306 test)
+# with YOLO-format labels (class order 0=smoke, 1=fire — see DFIRE_CLASSES);
+# labels + signed image.src URLs live in the parquet rows API (authoritative).
+DFIRE_HF_MIRROR = "badsaarow/d-fire"
+DFIRE_HF_BASE = "https://huggingface.co/datasets/badsaarow/d-fire/resolve/main"
+DFIRE_HF_ROWS = "https://datasets-server.huggingface.co/rows"
+
+
+def _hf_listdir(path: str) -> List[str]:
+    """List file paths under an HF dataset dir via the tree API."""
+    url = (
+        f"https://huggingface.co/api/datasets/{DFIRE_HF_MIRROR}/tree/main/{path}"
+        "?recursive=true&expand=false"
+    )
+    import json as _json
+
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        payload = _json.load(resp)
+    return [e["path"] for e in payload if e.get("type") == "file"]
+
+
+def _hf_rows(split: str, offset: int = 0, length: int = 100) -> List[Dict]:
+    """Fetch one page of rows for a mirror split (filename, label, image.src).
+
+    ``image_src`` is the signed cached-assets URL for the image — the ONLY
+    working source for the test split (the mirror's file tree is out of sync
+    with the parquet). Retries with backoff on transient 5xx / timeouts from
+    the datasets-server.
+    """
+    import json as _json
+    import time as _time
+
+    q = f"dataset={DFIRE_HF_MIRROR}&config=default&split={split}&offset={offset}&length={length}"
+    url = f"{DFIRE_HF_ROWS}?{q}"
+    last_exc = None
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                payload = _json.load(resp)
+            out = []
+            for r in payload.get("rows", []):
+                row = r["row"]
+                img = row.get("image") or {}
+                out.append(
+                    {
+                        "filename": row["filename"],
+                        "label": row.get("label", ""),
+                        "image_src": img.get("src"),
+                    }
+                )
+            return out
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_exc = exc
+            _time.sleep(2.0 * (attempt + 1))
+    raise RuntimeError(f"rows API failed for {split}@{offset}: {last_exc}")
+
+
+def _hf_download(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
+        shutil.copyfileobj(resp, out)
+
+
+def _hf_download_retry(url: str, dest: Path, attempts: int = 3) -> bool:
+    """Download with backoff; True on success, False after exhausting attempts."""
+    import time as _time
+
+    for i in range(attempts):
+        try:
+            _hf_download(url, dest)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if i == attempts - 1:
+                print(
+                    f"    (download attempt {i + 1}/{attempts} failed: {exc})",
+                    file=sys.stderr,
+                )
+                return False
+            _time.sleep(2.0 * (i + 1))
+    return False
+
+
+def _hf_refetch_row(split: str, filename: str) -> Optional[Dict]:
+    """Re-fetch one mirror row to get a FRESH signed image.src URL.
+
+    Signed cached-assets URLs expire (~1 h); when a download fails, refetching
+    the row yields a new valid URL. Returns None on any error (filter API
+    unavailable / row gone).
+    """
+    import json as _json
+    import urllib.parse as _p
+
+    where = "filename='{}'".format(filename)
+    q = (
+        f"dataset={DFIRE_HF_MIRROR}&config=default&split={split}"
+        f"&where={_p.quote(where)}"
+    )
+    url = f"https://datasets-server.huggingface.co/filter?{q}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            payload = _json.load(resp)
+        rows = payload.get("rows", [])
+        if not rows:
+            return None
+        row = rows[0]["row"]
+        img = row.get("image") or {}
+        return {
+            "filename": row["filename"],
+            "label": row.get("label", ""),
+            "image_src": img.get("src"),
+        }
+    except Exception:  # noqa: BLE001 — fallback path, report nothing
+        return None
+
+
+def run_dfire_mirror(args: argparse.Namespace) -> int:
+    """Download a D-Fire subset from the anonymous HF mirror + convert to COCO.
+
+    Mirror layout quirk (verified 2026-08-05): the parquet rows API is the
+    authoritative source for BOTH splits — it carries the YOLO label text and
+    a signed ``image.src`` (cached-assets) URL for each image, while the file
+    tree is out of sync with the parquet. We select only LABELED rows (the
+    first tree labels are 'none' images with empty labels, which would leave
+    the fire/smoke classes with no cached proposals), download via
+    ``image.src`` (retrying with a freshly refetched URL on expiry), and
+    convert the YOLO labels to COCO. Missing images are a hard error (a
+    silently shrunk test set would bias mAP).
+    """
+    raw_ds = args.raw_root / "dfire"
+    staging = args.staging / "dfire_mirror"
+    n = args.subset or 0
+    def labeled_rows(split: str, want: int) -> List[Dict]:
+        out, offset = [], 0
+        while len(out) < want and offset < 20000:
+            page = _hf_rows(split, offset=offset, length=100)
+            if not page:
+                break
+            out.extend(r for r in page if r.get("label", "").strip())
+            offset += len(page)
+        return out[:want] if want else out
+
+    print("  fetching mirror train rows (labeled only) ...")
+    train_rows = labeled_rows("train", n)
+    if n and len(train_rows) < n:
+        print(
+            f"ERROR: only {len(train_rows)} labeled train images found on the "
+            f"mirror (wanted {n}).",
+            file=sys.stderr,
+        )
+        return 1
+    print("  fetching mirror test rows (labeled only) ...")
+    test_rows = labeled_rows("test", n)
+    if n and len(test_rows) < n:
+        print(
+            f"ERROR: only {len(test_rows)} labeled test images found on the mirror "
+            f"(wanted {n}).",
+            file=sys.stderr,
+        )
+        return 1
+
+    failures: List[str] = []
+    train_copied, test_copied = [], []
+    for split, rows, copied in (("train", train_rows, train_copied),
+                                ("test", test_rows, test_copied)):
+        dest_dir = raw_ds / split
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for r in rows:
+            img_dest = dest_dir / r["filename"]
+            src = r.get("image_src")
+            if not src:
+                failures.append(r["filename"])
+                continue
+            ok = _hf_download_retry(src, img_dest, attempts=3)
+            if not ok:
+                # signed URL expired — refetch the row for a fresh URL
+                fresh = _hf_refetch_row(split, r["filename"])
+                if fresh and fresh.get("image_src"):
+                    ok = _hf_download_retry(fresh["image_src"], img_dest, attempts=2)
+                    if ok:
+                        r = fresh
+            if not ok:
+                failures.append(r["filename"])
+                print(f"  ERROR: failed to fetch {split} {r['filename']}",
+                      file=sys.stderr)
+                continue
+            lbl_dest.parent.mkdir(parents=True, exist_ok=True)
+            lbl_dest.write_text(r["label"])
+            copied.append(img_dest)
+        print(f"  {split}: {len(copied)} images -> {dest_dir}")
+        if failures:
+            print(
+                f"  ERROR: {len(failures)} image(s) could not be downloaded: "
+                f"{failures}",
+                file=sys.stderr,
+            )
+
+    # --- COCO conversion for both splits --------------------------------------
+    for split, label_dir in (("train", staging / "train" / "labels"),
+                             ("test", staging / "test" / "labels")):
+        split_dir = raw_ds / split
+        images = sorted(p for p in split_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+        if not images:
+            print(f"  WARNING: no images for {split} — skipping COCO conversion",
+                  file=sys.stderr)
+            continue
+        coco = _yolo_to_coco(images, split, label_root=label_dir)
+        ann_out = args.annotations_root / f"dfire_{split}.json"
+        ann_out.parent.mkdir(parents=True, exist_ok=True)
+        ann_out.write_text(json.dumps(coco, indent=2))
+        print(
+            f"  {split}: wrote {ann_out} "
+            f"({len(coco['images'])} images, {len(coco['annotations'])} boxes)"
+        )
+    if failures:
+        # A missing image silently shrinks the eval set and biases mAP — fail.
+        print(
+            f"ERROR: {len(failures)} D-Fire image(s) could not be downloaded "
+            f"({failures}). Re-run to pick up fresh signed URLs before using "
+            f"this data for evaluation.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def run_dfire(args: argparse.Namespace) -> int:
@@ -382,10 +628,72 @@ def _dataset_present(raw_ds: Path) -> bool:
     return any(_walk_images(raw_ds))
 
 
+def _copy_gt_subset(
+    gt_path: Path,
+    out_path: Path,
+    split_images: Sequence[Path],
+    remap: Optional[Dict[str, str]] = None,
+) -> None:
+    """Filter a COCO GT JSON to a subset of images and remap category names.
+
+    ``split_images`` are the copied image files of a split; the GT ``images``
+    entries are matched by filename stem (LaDD GT file_name has no extension,
+    e.g. "115", while the image file is 115.jpg). ``remap`` maps original
+    category names -> pipeline class names (e.g. LaDD's "Pedestrian" -> the
+    config's "person").
+    """
+    with open(gt_path) as fh:
+        coco = json.load(fh)
+    stems = {p.stem for p in split_images}
+    cat_remap = {k: v for k, v in (remap or {}).items()}
+    kept_images, kept_anns = [], []
+    kept_ids = set()
+    for img in coco.get("images", []):
+        if Path(img.get("file_name", "")).stem in stems:
+            kept_images.append(img)
+            kept_ids.add(img["id"])
+    for ann in coco.get("annotations", []):
+        if ann.get("image_id") in kept_ids:
+            cat = next(
+                (c for c in coco.get("categories", []) if c["id"] == ann.get("category_id")),
+                None,
+            )
+            if cat and cat["name"] in cat_remap:
+                ann = {**ann, "category_id": _remap_category(coco, cat, cat_remap)}
+            kept_anns.append(ann)
+    out = {
+        "info": coco.get("info", {}),
+        "images": kept_images,
+        "annotations": kept_anns,
+        "categories": [
+            {**c, "name": cat_remap.get(c["name"], c["name"])}
+            for c in coco.get("categories", [])
+        ],
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as fh:
+        json.dump(out, fh, indent=2)
+
+
+def _remap_category(coco: Dict, cat: Dict, remap: Dict[str, str]) -> int:
+    """Return the category id for a remapped name (reusing an existing one)."""
+    new_name = remap.get(cat["name"])
+    for c in coco.get("categories", []):
+        if c["name"] == new_name and c["id"] != cat["id"]:
+            return c["id"]
+    return cat["id"]
+
+
 def run_ladd(args: argparse.Namespace) -> int:
     raw_ds = args.raw_root / "ladd"
     if _dataset_present(raw_ds):
         print("  LADD images already present — skipping download.")
+        if not (args.annotations_root / "ladd_test.json").exists():
+            print(
+                "  WARNING: images exist but data/annotations/ladd_test.json is "
+                "missing — re-run with --ladd-archive or --ladd-gt to rebuild it.",
+                file=sys.stderr,
+            )
         return 0
 
     archive = Path(args.ladd_archive) if args.ladd_archive else None
@@ -397,7 +705,8 @@ def run_ladd(args: argparse.Namespace) -> int:
                 "\n"
                 "  Steps:\n"
                 "    1. Obtain a verified LADD download link (author page, paper "
-                "supplementary, or Zenodo record).\n"
+                "supplementary, or Zenodo record; the Kaggle 'Lacmus Drone Dataset "
+                "(LaDD)' page is a working source).\n"
                 "    2. Either pass it here:\n"
                 "         python download_datasets.py --dataset ladd --ladd-url <URL> "
                 "--subset 10\n"
@@ -436,33 +745,80 @@ def run_ladd(args: argparse.Namespace) -> int:
     with open(sums_file, "w") as fh:
         fh.write(f"{_sha256(archive)}  {archive.name}\n")
     print(f"  checksum recorded -> {sums_file}")
-    all_images = _walk_images(extracted)
-    if not all_images:
-        print("ERROR: no images found in the LADD archive.", file=sys.stderr)
-        return 1
-    n = len(all_images)
-    splits = {
-        "train": all_images[: int(n * 0.8)],
-        "test": all_images[int(n * 0.8) :],
-    }
+
+    # Splits: honor embedded train/val/test dirs (Kaggle LaDD layout), else a
+    # deterministic 80/20 split of the whole image set.
+    splits: Dict[str, List[Path]] = {}
+    for split in ("train", "val", "test"):
+        cand = extracted / "images" / split
+        if cand.is_dir():
+            sub = [p for p in _walk_images(cand)]
+            if sub:
+                splits[split] = sub
+    if not splits:
+        all_images = _walk_images(extracted)
+        if not all_images:
+            print("ERROR: no images found in the LADD archive.", file=sys.stderr)
+            return 1
+        n = len(all_images)
+        splits = {
+            "train": all_images[: int(n * 0.8)],
+            "test": all_images[int(n * 0.8) :],
+        }
+        print(
+            "  archive has no embedded split dirs — using deterministic "
+            f"80/20 train/test split ({len(splits['train'])}/{len(splits['test'])})"
+        )
+
+    copied: Dict[str, List[Path]] = {}
     for split, images in splits.items():
+        if split == "val":
+            continue
         subset = _pick_subset(sorted(images), args.subset)
         dest_dir = raw_ds / split
         dest_dir.mkdir(parents=True, exist_ok=True)
         for img in subset:
             shutil.copy2(img, dest_dir / img.name)
+        copied[split] = list(dest_dir.iterdir())
         print(f"  {split}: {len(subset)} images -> {dest_dir}")
+
+    # GT: explicit --ladd-gt wins; else auto-extract the archive's COCO test
+    # annotations (Kaggle LaDD ships annotations/test.json) and filter+remap.
     if args.ladd_gt:
         gt = Path(args.ladd_gt)
         out = args.annotations_root / "ladd_test.json"
         shutil.copy2(gt, out)
         print(f"  GT copied -> {out}")
     else:
-        print(
-            "  NOTE: no --ladd-gt given — place the COCO GT JSON at "
-            "data/annotations/ladd_test.json before running the pipeline."
-        )
+        auto = extracted / "annotations" / "test.json"
+        if auto.exists() and copied.get("test"):
+            remap = _parse_remap(args.ladd_gt_remap)
+            _copy_gt_subset(auto, args.annotations_root / "ladd_test.json",
+                            copied["test"], remap=remap)
+            print(
+                f"  GT extracted from archive + filtered to test subset "
+                f"(categories remapped: {args.ladd_gt_remap or 'none'}) -> "
+                f"{args.annotations_root / 'ladd_test.json'}"
+            )
+        else:
+            print(
+                "  NOTE: no --ladd-gt given and no annotations/test.json found in "
+                "the archive — place the COCO GT JSON at "
+                "data/annotations/ladd_test.json before running the pipeline."
+            )
     return 0
+
+
+def _parse_remap(spec: Optional[str]) -> Optional[Dict[str, str]]:
+    """Parse 'Old=New,Other=New2' into a dict (None when empty)."""
+    if not spec:
+        return None
+    out = {}
+    for pair in spec.split(","):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out or None
 
 
 # ---------------------------------------------------------------------------
@@ -511,12 +867,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--dfire-url", default=DFIRE_DRIVE_URL, help=argparse.SUPPRESS)
     parser.add_argument("--dfire-archive", default=None, type=Path,
                         help="use a pre-downloaded D-Fire archive instead of downloading")
+    parser.add_argument("--dfire-mirror", action="store_true",
+                        help="download D-Fire from the anonymous HF mirror "
+                             "(badsaarow/d-fire) instead of OneDrive — train "
+                             "images+labels + test images with labels pulled "
+                             "from the parquet rows API (subset-compatible)")
     parser.add_argument("--ladd-url", default=LADD_URL_PLACEHOLDER,
                         help="verified LADD download URL (replace placeholder)")
     parser.add_argument("--ladd-archive", default=None, type=Path,
-                        help="use a pre-downloaded LADD archive")
+                        help="use a pre-downloaded LADD archive (Kaggle LaDD zip works)")
     parser.add_argument("--ladd-gt", default=None, type=Path,
                         help="COCO-style LADD GT JSON to copy to data/annotations/")
+    parser.add_argument("--ladd-gt-remap", default=None,
+                        help="category-name remap for in-archive GT, e.g. "
+                             "'Pedestrian=person' (LaDD GT uses 'Pedestrian'; "
+                             "the pipeline config uses 'person')")
     parser.add_argument("--check-only", action="store_true",
                         help="verify configured URLs are reachable; do not download")
     parser.add_argument("--sums-dir", default=None, type=Path,
@@ -529,6 +894,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.check_only:
         return check_links(args)
     if args.dataset == "dfire":
+        if args.dfire_mirror:
+            return run_dfire_mirror(args)
         return run_dfire(args)
     return run_ladd(args)
 

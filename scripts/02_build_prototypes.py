@@ -21,7 +21,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
+
+# Bootstrap so ``uadapt`` is importable when this script runs from any CWD
+# (Colab, shell, notebook subprocess) without PYTHONPATH=src.
+_SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("02_build_prototypes")
@@ -48,7 +55,14 @@ def main() -> None:
     from uadapt.prototypes.prototype_builder import build_visual_prototypes
 
     dataset_cfg = load_yaml(args.dataset_config)
-    classes = [c for c, info in dataset_cfg["classes"].items() if info.get("retained", True)]
+    # Configs may declare classes as a plain list (``classes: [fire, smoke]``)
+    # or as a dict of {class: {retained: bool}} for partial-class runs. Both
+    # forms are accepted here; retained=False entries are excluded.
+    raw_classes = dataset_cfg["classes"]
+    if isinstance(raw_classes, dict):
+        classes = [c for c, info in raw_classes.items() if info.get("retained", True)]
+    else:
+        classes = list(raw_classes)
 
     records = load_cache(args.cache_dir, split="train")
     rng = __import__("numpy").random.default_rng(args.seed)

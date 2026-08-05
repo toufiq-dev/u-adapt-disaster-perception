@@ -4,6 +4,67 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-05 — Milestone 1 executed: real-data n=10 pilot runs end-to-end (issues #3)
+
+- **Environment set up** — `torch` + `transformers` installed in the project
+  venv (MPS backend); `scripts/01_extract_and_cache.py`, `02_build_prototypes.py`,
+  `03_run_fusion.py`, `04_evaluate.py` gained the `src/` path bootstrap the
+  other scripts already had (they were only reachable via `PYTHONPATH`).
+- **Grounding DINO backbone rewritten** (`src/uadapt/models/backbone_loader.py`)
+  — `predict()` now extracts real per-box visual features (RoI mean-pool of
+  the encoder vision hidden states) and per-class text similarities (from the
+  query-to-token logits), instead of the previous stub. Class names are
+  normalized to the config vocabulary via token-span matching; device
+  auto-resolves CUDA → MPS → CPU. Smoke-tested on a real LADD image.
+- **Latent `load_cache` bug fixed** (`src/uadapt/features/cache_engine.py`) —
+  the function declared/returned `Dict[str, List[FeatureRecord]]` but every
+  caller (and the type signature) expects a flat list; exposed only on the
+  real-data path (the demo previously ran on synthetic data).
+- **D-Fire class-order convention corrected** — the HF mirror's YOLO labels
+  use **`0 = smoke, 1 = fire`** (the Kaggle mirror is literally named
+  "smoke-fire-detection"), not the paper table order `{0: fire, 1: smoke}`.
+  The swap was discovered empirically (a systematic 22/22 class inversion at
+  high IoU → D-Fire mAP50 0.000 → **0.821** after the fix). Constants updated
+  in `data/download_scripts/download_datasets.py`; GT JSONs regenerated.
+- **LaDD archive provenance** — official repo still 404; the user supplied the
+  archive (`~/Downloads/archive.zip`). Extracted with category remap
+  `Pedestrian → person` into `data/raw/ladd` + `data/annotations/ladd_{split}.json`
+  (n=10 pilot subset). License confirmation against an official source remains
+  the gate before the full-data run (`docs/licenses.md`).
+- **n=10 pilot ran end-to-end** via `N_TEST_IMAGES=10 bash scripts/run_real_data_validation.sh`
+  (real Grounding DINO Swin-T features → prototypes k=1/3/5 → Mode A eval):
+
+  | Method | LADD (min-max) | D-Fire (absolute) |
+  |---|---|---|
+  | Zero-shot raw | 0.736 | 0.821 |
+  | Text-only | 0.736 | 0.821 |
+  | Visual-only | 0.415 | 0.595 |
+  | Naive (w=0.5) | 0.736 | 0.803 |
+  | U-ADAPT Mode A | 0.736 | 0.742 |
+
+  Report: `docs/real_data_results_pilot.md` (self-labeled **"PILOT RESULTS
+  (n=10 images)"**; superseded by the full-data run).
+- **Pooled D1/D2/D3 = 0.000 on the pilot — honest, diagnosable finding.** The
+  real-cache path still uses the documented 0.5 text-variance placeholder,
+  per-class variances are structurally near-constant at 3 classes, and
+  `text_correct` is tautological while the backbone assigns
+  `class_name = argmax(text_sims)`. This is exactly the failure mode the
+  pre-registration caveats anticipate (limited per-class variance ⇒ no
+  correlation signal; D5 is the sentinel for variance clustering on real
+  data). No claim is made from the pilot diagnostics; they validate the
+  plumbing only.
+- **Tests** — `tests/test_backbone_loader.py` (9 unit tests for
+  `_class_token_spans`, `_roi_mean_feature`, `resolve_device` without
+  torch/transformers). Full suite: **108 passing**.
+- **Post-review hardening (2026-08-05)** — (1) RoI pooling now uses the exact
+  vision-token grid derived from the padded model input
+  (`inputs.pixel_values` aspect) instead of the square-root heuristic, so
+  features are not misaligned on non-square aerial imagery; the heuristic
+  remains as a fallback for callers without input dims. (2) The D-Fire
+  mirror downloader retries expired signed URLs (re-fetching a fresh row)
+  and now **fails loudly** if any image cannot be downloaded — a silently
+  shrunk test set would bias mAP.
+
 ## 2026-08-04 — Milestone 1: dataset licenses verified + download scripts (issues #1, #2)
 
 - **Dataset licenses verified (2026-08-04)** — `docs/licenses.md` filled in

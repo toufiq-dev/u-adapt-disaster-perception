@@ -15,6 +15,7 @@ datasets. **No raw data lives in the repository** — see
 | Zero-shot → transfer (Grounding DINO) | 61.0% → 92.2% mAP50 (gap 31.2 pp) |
 | License | Research use (presumed; confirm at manual download) — Confirmed 2026-08-04 ([`docs/licenses.md`](licenses.md)) |
 | Role | Primary few-shot detection benchmark |
+| Provenance | Archive user-supplied (2026-08-05, `~/Downloads/archive.zip`); extracted via `download_datasets.py --dataset ladd --ladd-archive ... --ladd-gt-remap "Pedestrian=person"`; n=10 pilot subset in `data/raw/ladd`. See [`docs/change_log.md`](change_log.md) 2026-08-05 |
 
 ### D-Fire
 | Field | Value |

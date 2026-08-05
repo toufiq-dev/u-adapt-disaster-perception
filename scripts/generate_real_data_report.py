@@ -130,6 +130,7 @@ def _mAP50_section(dataset: str, results: Dict) -> List[str]:
 def _gap_recovery_section(dataset: str, results: Dict, lit: Dict) -> List[str]:
     """Gap-recovery analysis: fraction of the zero-shot -> transfer gap closed."""
     gap = results.get("gap_recovery", {})
+    is_synthetic = results.get("meta", {}).get("data_source") == "synthetic"
     lines = [
         f"### {dataset} — gap recovery",
         "",
@@ -140,9 +141,19 @@ def _gap_recovery_section(dataset: str, results: Dict, lit: Dict) -> List[str]:
     ]
     vs_lit = gap.get("gap_recovery_vs_literature")
     if vs_lit is not None:
-        over = " (>100% means the adapter exceeds the literature transfer "\
-               "ceiling — expected only on the synthetic stand-in)" \
-            if vs_lit > 1.0 else ""
+        if vs_lit > 1.0:
+            if is_synthetic:
+                over = " (>100% means the adapter exceeds the literature "\
+                       "transfer ceiling — expected only on the synthetic "\
+                       "stand-in)"
+            else:
+                over = " (>100% means the adapter exceeds the literature "\
+                       "transfer ceiling — on real data this reflects the "\
+                       "tiny pilot subset: the literature ceiling is measured "\
+                       "over the full test set, while this run scores only "\
+                       "10 selected images)"
+        else:
+            over = ""
         lines.append(
             f"- **Fraction of the zero-shot→transfer gap closed:** "
             f"{_pct(vs_lit)}{over} "

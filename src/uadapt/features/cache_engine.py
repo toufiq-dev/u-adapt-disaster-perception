@@ -152,14 +152,20 @@ class FeatureCacheEngine:
 
 
 def load_cache(cache_dir: Path | str, split: str = "val") -> List[FeatureRecord]:
-    """Load cached feature records for a split (shared by all downstream stages)."""
+    """Load cached feature records for a split (shared by all downstream stages).
+
+    Returns a FLAT list of :class:`FeatureRecord` (the on-disk format is a
+    dict keyed by image_id, but every consumer — prototype builder, fusion,
+    demo eval — iterates records as a plain sequence).
+    """
     split_dir = Path(cache_dir) / split
     manifest = split_dir / "manifest.json"
     if not manifest.exists():
         raise FileNotFoundError(
             f"no cache found at {split_dir} (run 01_extract_and_cache.py first)"
         )
-    return _load_manifest_records(manifest)
+    by_image = _load_manifest_records(manifest)
+    return [r for recs in by_image.values() for r in recs]
 
 
 # ----------------------------------------------------------------------
