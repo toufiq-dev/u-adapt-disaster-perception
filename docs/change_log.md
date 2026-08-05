@@ -4,6 +4,90 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-06 — Real-data medium pilot (n=100) executed: RAM-safe streaming, confound resolution, gate-saturation finding
+
+- **RAM-safe feature extraction implemented (critical for scaling).**
+  `src/uadapt/features/cache_engine.py` `extract_and_cache` now processes
+  images in small batches (default `batch_size=8`), writing each batch to
+  disk and releasing references before loading the next — the previous
+  implementation decoded the entire split into RAM at once (~60 GB decoded
+  for LADD train). `scripts/01_extract_and_cache.py` gained a streaming
+  `iter_images`-style loader; the orchestrator's `N_TEST_IMAGES` cap is
+  respected per split. `tests/test_cache_engine.py` (new, 4 tests) pins the
+  batch-streaming behavior (resume manifest, id-uniqueness, no-OOM
+  structure). Full suite: **132 passing**.
+- **`lbl_dest` bug fixed** in `data/download_scripts/download_datasets.py`
+  (D-Fire mirror path): the label-destination variable was referenced but
+  never defined after an earlier retry-fix edit — would crash on the first
+  successful download. The n=100 D-Fire mirror re-download (100 train + 100
+  test, YOLO→COCO) succeeded with the fix in place.
+- **n=100 pilot ran end-to-end** via `N_TEST_IMAGES=100 bash
+  scripts/run_real_data_validation.sh` (real Grounding DINO Swin-T features
+  → prototypes k=5 → Mode A eval; LADD min-max, D-Fire absolute;
+  per-proposal estimators). 333 LADD + 324 D-Fire scored proposals; no OOM.
+
+  | Method | LADD (min-max) | D-Fire (absolute) |
+  |---|---|---|
+  | Zero-shot raw | 81.3 | 73.4 |
+  | Text-only | 81.3 | 73.4 |
+  | Visual-only | 66.9 | 54.7 |
+  | Naive (w=0.5) | 80.4 | 71.8 |
+  | U-ADAPT Mode A | 78.3 | 66.9 |
+
+- **U-ADAPT underperforms naive averaging on BOTH datasets at n=100**
+  (LADD 78.3 vs 80.4; D-Fire 66.9 vs 71.8) — the opposite of the synthetic
+  demo, and an honest pilot finding. Root cause is **gate saturation toward
+  the visual modality**: mean gate weight 0.70 (LADD) / 0.86 (D-Fire) with
+  w > 0.55 for 99.4% / 100% of proposals, because affinity (≥ 0.87 pilot,
+  [0.64, 0.999] at n=100) dominates the analytic gate — yet visual-only
+  reranking is *worse* than the raw detector score on this real data
+  (66.9 < 81.3 LADD; 54.7 < 73.4 D-Fire). The gate is leaning on the weaker
+  modality. This is a coefficient/threshold-calibration issue to revisit at
+  full scale, not a verdict on the method.
+- **Pooled D1/D2/D3 at n=100 (n=657 proposals):**
+
+  | Diagnostic | n=10 | n=100 | Interpretation |
+  |---|---|---|---|
+  | D1 ρ | −0.339 | **−0.056** | confound confirmed — not small-sample artifact |
+  | D2 ρ | +0.175 | **+0.051** | confound confirmed — scale artifact persists |
+  | D3 favorability | 94.1% (n=17) | **100% (n=246)** | one-sidedness confirmed — structural |
+  | D5 flag | both | **both** | Beta-regression fallback still triggered |
+
+  - **D1**: the n=10 negative sign did NOT replicate — pooled ρ collapsed to
+    −0.056 and the dataset base rates converged (LADD err 0.393 vs D-Fire
+    0.352 at n=100, vs 0.667/0.241 at n=10). Per-dataset: LADD ρ = 0.0
+    (constant entropy by construction), D-Fire ρ = −0.061. No within-
+    proposal text-uncertainty–accuracy relationship on real data; the pooled
+    value ≈ the within-D-Fire value ≈ 0.
+  - **D2**: per-dataset ρ ≈ 0 (LADD +0.077, D-Fire −0.022) while pooled is
+    +0.051 — the pooled sign is a **between-dataset normalization-scale
+    artifact** (min-max spread vs absolute tiny), not a within-proposal
+    effect. The n=10 +0.175 was small-sample inflation of the same
+    artifact; it did NOT "resolve" with scale.
+  - **D3**: disagreeing subsets remain one-sided (LADD 131 visual-better /
+    1 text-better; D-Fire 114/0). The affinity threshold (≥ 0.65) never
+    fails on real features, so `visual_correct` saturates and D3 = 100% is
+    a **saturation artifact** — the gate favors visual and visual is
+    (by that proxy) "correct", even though visual reranking actually
+    *hurts* mAP. Structural, not a small-sample issue; a re-thresholded
+    visual-correctness rule or lower-affinity proposals (full run) are
+    required before D3 can discriminate gate quality.
+  - **D5**: still flags both datasets on the absolute scale (LADD
+    frac 0.997, D-Fire 0.957) → the pre-registered Beta-regression
+    fallback contingency remains active.
+- **Report generator upgraded** (`scripts/generate_real_data_report.py`):
+  pilot auto-label threshold `n_test_images <= 100` (n=100 medium pilot
+  can no longer masquerade as final results), dynamic image count in the
+  >100% gap-recovery caveat, and three new honest caveats rendered with the
+  pooled diagnostics: U-ADAPT-underperforms (executive summary), D2
+  pooled-sign scale artifact, and D3 one-sidedness. Both
+  `docs/real_data_results_pilot.md` (PILOT RESULTS n=100) and
+  `docs/real_data_results.md` regenerated from the n=100 outputs.
+- **Status**: pipeline, data prep (100 test images per dataset), RAM-safe
+  streaming, and diagnostics all validated at n=100. Next: full-scale run
+  (unset `N_TEST_IMAGES`), after clearing `data/raw/.staging` (~9.3 GB)
+  and re-verifying LADD license provenance.
+
 ## 2026-08-05 — Per-proposal real-data uncertainty estimators fix pooled D1/D2/D3 = 0.000 (deviation on pre-registration §2 / §7.6)
 
 - **Root cause (investigated on the n=10 pilot).** The pooled D1/D2/D3 were

@@ -483,6 +483,12 @@ def run_dfire_mirror(args: argparse.Namespace) -> int:
                 print(f"  ERROR: failed to fetch {split} {r['filename']}",
                       file=sys.stderr)
                 continue
+            # YOLO label next to the COCO-conversion lookup layout
+            # (staging/<split>/labels/<stem>.txt, see _yolo_to_coco's
+            # ``label_root``). NOTE (2026-08-05): this line was accidentally
+            # dropped by the retry-fix edit — without it every successful
+            # download hit NameError. Restored + covered by the n=100 pilot.
+            lbl_dest = staging / split / "labels" / (Path(r["filename"]).stem + ".txt")
             lbl_dest.parent.mkdir(parents=True, exist_ok=True)
             lbl_dest.write_text(r["label"])
             copied.append(img_dest)

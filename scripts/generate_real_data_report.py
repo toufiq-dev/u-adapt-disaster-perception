@@ -17,11 +17,11 @@ baselines. A prominent caveat is emitted automatically when the underlying
 runs used the synthetic stand-in world (meta.data_source == "synthetic") —
 real-data evaluation supersedes it.
 
-**Pilot labeling:** when any run reports ``meta.n_test_images < 100`` (or
+**Pilot labeling:** when any run reports ``meta.n_test_images <= 100`` (or
 ``--pilot`` is passed), the title reads **"PILOT RESULTS (n=<N> images)"**
 and a banner warns that the numbers are a preliminary pipeline check, not
-final thesis results — so a n=10 pilot report can never be mistaken for the
-final thesis report.
+final thesis results — so a n=10/n=100 pilot report can never be mistaken
+for the final thesis report.
 
 Usage:
     python scripts/generate_real_data_report.py \\
@@ -147,11 +147,13 @@ def _gap_recovery_section(dataset: str, results: Dict, lit: Dict) -> List[str]:
                        "transfer ceiling — expected only on the synthetic "\
                        "stand-in)"
             else:
+                n_img = results.get("meta", {}).get("n_test_images")
                 over = " (>100% means the adapter exceeds the literature "\
                        "transfer ceiling — on real data this reflects the "\
-                       "tiny pilot subset: the literature ceiling is measured "\
-                       "over the full test set, while this run scores only "\
-                       "10 selected images)"
+                       "tiny pilot subset: the literature ceiling is "\
+                       "measured over the full test set, while this run "\
+                       f"scores only {n_img if n_img else 'a few'} "\
+                       "selected images)"
         else:
             over = ""
         lines.append(
@@ -213,6 +215,25 @@ def _diag_value_table(pooled: Dict, per_dataset: Dict) -> List[str]:
         "dominated by this **between-dataset base-rate difference**, not by a "
         "within-proposal uncertainty–accuracy relationship (per-dataset D1 is "
         "the interpretable signal). See `docs/change_log.md` 2026-08-05.",
+        "",
+        "> ⚠️ **D2 pooled-sign caveat (2026-08-05, confirmed at n=100):** the "
+        "pooled D2 ρ is likewise driven by the **between-dataset normalization "
+        "scale difference** (LADD min-max spreads visual variance across [0,1]; "
+        "D-Fire absolute keeps it tiny). Within each dataset the visual "
+        "uncertainty–accuracy relationship is ≈ 0 (LADD ρ = +0.077, D-Fire "
+        "ρ = −0.022 at n=100), so the pooled positive sign is a scale artifact, "
+        "not evidence of a within-proposal effect.",
+        "",
+        "> ⚠️ **D3 one-sidedness caveat (2026-08-05, confirmed at n=100):** the "
+        "modality-accuracy disagreeing subsets are almost entirely "
+        "*visual-better* (LADD 131/132, D-Fire 114/114 — 1 text-better case "
+        "total). The affinity threshold (≥ 0.65) never fails on real features "
+        "(affinity ∈ [0.64, 0.999]), so `visual_correct` saturates and the gate "
+        "always leans visual — which the mAP50 table shows is the *weaker* "
+        "reranker on this data. A 100% D3 is therefore a saturation artifact, "
+        "not evidence the gate is well-calibrated. Diagnosing D3 properly "
+        "requires proposals with lower affinity (full-scale run) or a "
+        "re-thresholded visual-correctness rule.",
     ]
     # Per-dataset D1/D2/D3 for reporting.
     lines += ["", "Per-dataset values (reported; pooled is primary):", "",
@@ -305,7 +326,7 @@ def main() -> None:
         for r in (ladd, dfire)
         if r.get("meta", {}).get("n_test_images") is not None
     ]
-    pilot = args.pilot or any(n < 100 for n in pilot_ns)
+    pilot = args.pilot or any(n <= 100 for n in pilot_ns)
     label_n = f"n={max(pilot_ns)}" if (pilot and pilot_ns and not args.pilot) else args.pilot_n
 
     title = (
@@ -353,6 +374,15 @@ def main() -> None:
             f"averaging **{_fmt_mAP(naive)}%** and zero-shot "
             f"**{_fmt_mAP(zs)}%**."
         )
+        if ua < naive or ua < zs:
+            worse = "naive average" if ua < naive else "zero-shot baseline"
+            lines.append(
+                f"  - ⚠️ **U-ADAPT underperforms** the {worse} on {name}. "
+                f"The analytic gate saturates toward the visual "
+                f"modality (gate weight mean ≫ 0.5 on real features), but "
+                f"visual-only reranking is worse than the raw detector score "
+                f"here — see the D2/D3 caveat below."
+            )
     if pooled_data:
         s = pooled_data.get("summary", {})
         lines += [

@@ -43,22 +43,27 @@ def load_yaml(path: Path) -> dict:
         return yaml.safe_load(fh)
 
 
-def load_images(split_dir: Path, limit: int | None) -> tuple[list[np.ndarray], list[str]]:
-    """Load images from a split directory (jpg/png). Colab-friendly loader."""
+def iter_image_pairs(split_dir: Path, limit: int | None):
+    """Lazily yield ``(image_rgb, image_id)`` for readable images in split_dir.
+
+    RAM-safe streaming (2026-08-05): reads/decodes ONE image at a time and
+    drops it after yielding, so peak image RAM is ~1 frame instead of the
+    whole split. The old ``load_images`` decoded the entire split into a list
+    first — a full LADD train split (~1,200 aerial images) would need tens of
+    GB of decoded RAM and OOM on a laptop. Image ids are filename stems (the
+    cache/GT key used by demo_mode_a_end_to_end.py).
+    """
     import cv2
 
     paths = sorted(p for p in split_dir.iterdir() if p.suffix in {".jpg", ".jpeg", ".png"})
     if limit:
         paths = paths[:limit]
-    images, ids = [], []
     for p in paths:
         img = cv2.imread(str(p))
         if img is None:
             logger.warning("could not read %s", p)
             continue
-        images.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        ids.append(p.stem)
-    return images, ids
+        yield cv2.cvtColor(img, cv2.COLOR_BGR2RGB), p.stem
 
 
 def main() -> None:
@@ -87,7 +92,8 @@ def main() -> None:
         )
 
     split_dir = Path(dataset_cfg["splits"][args.split])
-    images, image_ids = load_images(split_dir, args.limit)
+    # Stream images one at a time (RAM-safe; see iter_image_pairs).
+    pairs = iter_image_pairs(split_dir, args.limit)
     logger.info("loading backbone %s (device from config)", model_cfg["name"])
     backbone = load_backbone(model_cfg, device=model_cfg["inference"].get("device", "cuda"))
 
@@ -97,7 +103,7 @@ def main() -> None:
         top_k=top_k,
     )
     out = engine.extract_and_cache(
-        images, classes, split=args.split, image_ids=image_ids, resume=not args.no_resume
+        pairs, classes, split=args.split, image_ids=None, resume=not args.no_resume
     )
     logger.info("done. cache at %s", out)
 

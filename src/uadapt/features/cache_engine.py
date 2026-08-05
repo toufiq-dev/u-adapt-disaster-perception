@@ -86,10 +86,17 @@ class FeatureCacheEngine:
         """Extract features for ``images`` and cache them for ``split``.
 
         Args:
-            images: sequence of images (np.ndarray HxWx3 or paths).
+            images: sequence of images (np.ndarray HxWx3), OR a lazy iterable
+                of ``(image, image_id)`` pairs — the RAM-safe streaming mode
+                used by 01_extract_and_cache.py: each image is decoded,
+                processed and its reference dropped before the next is read,
+                so peak image RAM is ~1 frame instead of the whole split
+                (a full LADD train split of ~1,200 aerial images would
+                otherwise need tens of GB decoded).
             classes: open-vocabulary class list.
             split: cache key (train / val / test).
-            image_ids: optional parallel ids (defaults to indices).
+            image_ids: optional parallel ids (defaults to indices). Must be
+                None when ``images`` is a lazy pairs iterable.
             resume: skip images already cached (Colab-friendly).
 
         Returns the cache directory.
@@ -103,8 +110,27 @@ class FeatureCacheEngine:
             records = _load_manifest_records(manifest_path)
             logger.info("resuming split %s with %d images cached", split, len(records))
 
-        ids = image_ids or [f"img_{i:06d}" for i in range(len(images))]
-        for image_id, image in zip(ids, images):
+        # Streaming mode: ``images`` has no __len__ -> it is a lazy iterable
+        # of (image, image_id) pairs (each image freed right after use).
+        try:
+            len(images)  # type: ignore[arg-type]
+            is_stream = False
+        except TypeError:
+            is_stream = True
+        if is_stream:
+            if image_ids is not None:
+                raise ValueError(
+                    "image_ids must be None when images is a lazy (image, id) "
+                    "pairs iterable"
+                )
+            # Pairs are yielded as (image, image_id); normalize to (id, image)
+            # so the shared loop below handles both modes identically.
+            items = ((iid, img) for img, iid in images)  # type: ignore[assignment]
+        else:
+            ids = image_ids or [f"img_{i:06d}" for i in range(len(images))]  # type: ignore[arg-type]
+            items = zip(ids, images)  # type: ignore[arg-type]
+
+        for image_id, image in items:
             if resume and image_id in records:
                 continue
             proposals = self.backbone.predict(image, classes, image_id=image_id)
