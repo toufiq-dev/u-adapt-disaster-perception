@@ -4,6 +4,47 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-07 — Gate-saturation quantification, Mode A fused-score fix in 03, Beta-regression fallback gate (D5 contingency)
+
+- **Saturation analysis tool added** (`scripts/analyze_saturation.py`) — loads
+  the real n=100 pilot `proposal_level.json` files and prints per-dataset stats
+  for `w` / `affinity` / `norm_text_var` / `norm_visual_var`, a counterfactual
+  decomposition (gate weight if the variance terms were inert), a verdict, and
+  2×2 histogram figures per dataset (saved to
+  `outputs/real_data/saturation_analysis/`). Confirms the saturation hypothesis:
+  LADD affinity mean 0.943 (99.4% > 0.8) alone pins mean w at 0.72 while the
+  variance terms move w by only ±0.021 on average; D-Fire affinity mean 0.946
+  sets a w ≥ 0.71 floor for every proposal, with 100% of w > 0.55.
+- **Mode A fused scores fixed in the scripted path** (`scripts/03_run_fusion.py`):
+  `_run_mode_a` now emits `S_final = (1 - w) * S_text + w * S_visual` (S_text =
+  cached per-class text similarity of the predicted class; S_visual = visual
+  affinity proxy, matching `src/uadapt/demo/pipeline.py`) instead of the raw
+  cached detector `score` (review finding: the scripted path silently produced
+  zero-shot rankings labeled as Mode A). The module's score-scale note was
+  updated. Tests: `tests/test_03_run_fusion.py` (4 tests) pin the fused output.
+- **Beta-regression fallback gate implemented** (pre-registered D5 contingency,
+  §10): `beta_regression_gate` + `BetaGate` in
+  `src/uadapt/fusion/mode_a_analytic.py` (exported from `uadapt.fusion`). The
+  weight is the mean of a Beta distribution with the SAME analytic logit (fixed
+  coefficients α=β=γ=1) and input-linked precision
+  `φ = φ_max / (1 + slope·(v_text + v_visual))`, blended with a neutral 0.5
+  prior — it hedges the gate toward naive averaging exactly where D5 flags the
+  Taylor approximation as invalid, and recovers the analytic gate in the
+  low-variance limit (still training-free). Wired as
+  `--gate-type {analytic,beta_fallback}` (default `analytic`, backward
+  compatible) in `scripts/03_run_fusion.py` and `scripts/demo_mode_a_end_to_end.py`;
+  recorded in `run_demo` meta (`gate_type`). Tests: 10 unit tests in
+  `tests/test_mode_a_gate.py` (validity at exact 0.0/1.0 variances,
+  monotonicity, analytic-limit recovery, softening property, batch/scalar
+  parity) + 4 wiring tests in `tests/test_demo_mode_a.py`. Full suite: 150 passing.
+- **Preliminary real-data behavior of the fallback** (default 80-image subset;
+  same subset for both gates, so the comparison is apples-to-apples): D-Fire
+  mean w drops 0.855 → 0.775 and Mode A mAP50 improves 0.668 → 0.682; LADD mean
+  w 0.698 → 0.685, mAP50 0.751 → 0.753 (≈ neutral). The hedge is directional
+  and modest at the default parameters (φ_max = 20, prior precision = 1); the
+  fallback is a pre-registered robustness contingency, not a claim of
+  improvement. Full-scale re-tuning is deferred to the main run.
+
 ## 2026-08-06 — Real-data medium pilot (n=100) executed: RAM-safe streaming, confound resolution, gate-saturation finding
 
 - **RAM-safe feature extraction implemented (critical for scaling).**

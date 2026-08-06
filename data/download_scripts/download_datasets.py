@@ -430,8 +430,13 @@ def run_dfire_mirror(args: argparse.Namespace) -> int:
     staging = args.staging / "dfire_mirror"
     n = args.subset or 0
     def labeled_rows(split: str, want: int) -> List[Dict]:
+        # ``want == 0`` means "all labeled rows" (full download); the pilot
+        # always passed a positive --subset, so the full path was only
+        # exercised after the fix below (2026-08-06). Without it the loop
+        # guard ``len(out) < want`` is False at want=0 and NO rows are
+        # fetched — silently downloading 0 images.
         out, offset = [], 0
-        while len(out) < want and offset < 20000:
+        while (want == 0 or len(out) < want) and offset < 20000:
             page = _hf_rows(split, offset=offset, length=100)
             if not page:
                 break

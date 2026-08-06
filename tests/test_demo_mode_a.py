@@ -429,3 +429,81 @@ def test_real_mode_meta_estimators_on_synthetic_path(results):
     # estimators (backward compatible).
     assert results.meta["text_uncertainty_estimator"] == "template_ensemble_variance"
     assert results.meta["visual_uncertainty_estimator"] == "support_dispersion"
+
+
+# ---------------------------------------------------------------------------
+# Beta-regression fallback gate (pre-registered D5 contingency) — wiring
+# ---------------------------------------------------------------------------
+def test_run_demo_beta_fallback_gate(dataset):
+    """run_demo(gate_type="beta_fallback") runs end-to-end and records the
+    gate type in meta (auditability)."""
+    results = run_demo(
+        train_records=dataset.train_records,
+        test_records=dataset.test_records,
+        ground_truth=dataset.ground_truth,
+        classes=dataset.classes,
+        template_embeddings=dataset.template_embeddings,
+        shots=5,
+        seed=0,
+        gate_type="beta_fallback",
+    )
+    for key in ("zero_shot_raw", "text_only", "visual_only",
+                "naive_average", "uadapt_mode_a"):
+        assert key in results.map50
+        assert 0.0 <= results.map50[key] <= 1.0
+    # The Beta gate must produce valid weights and a fused score in [0, 1].
+    gs = results.gate_stats
+    assert 0.0 <= gs["mean_w"] <= 1.0
+    ws = np.asarray([r["w"] for r in results.proposal_level])
+    fused = np.asarray([r["fused"] for r in results.proposal_level])
+    assert np.all((ws >= 0.0) & (ws <= 1.0))
+    assert np.all((fused >= 0.0) & (fused <= 1.0))
+    assert results.meta["gate_type"] == "beta_fallback"
+
+
+def test_run_demo_beta_fallback_differs_from_analytic(dataset):
+    """The Beta fallback must produce genuinely different gate weights from
+    the analytic gate (it is a real alternative, not a no-op)."""
+    analytic = run_demo(
+        train_records=dataset.train_records,
+        test_records=dataset.test_records,
+        ground_truth=dataset.ground_truth,
+        classes=dataset.classes,
+        template_embeddings=dataset.template_embeddings,
+        shots=5,
+        seed=0,
+    )
+    beta = run_demo(
+        train_records=dataset.train_records,
+        test_records=dataset.test_records,
+        ground_truth=dataset.ground_truth,
+        classes=dataset.classes,
+        template_embeddings=dataset.template_embeddings,
+        shots=5,
+        seed=0,
+        gate_type="beta_fallback",
+    )
+    w_a = np.asarray([r["w"] for r in analytic.proposal_level])
+    w_b = np.asarray([r["w"] for r in beta.proposal_level])
+    assert w_a.shape == w_b.shape
+    assert not np.allclose(w_a, w_b)
+
+
+def test_run_demo_default_gate_type_is_analytic(results):
+    # Backward compatibility: the default gate is the pre-registered analytic
+    # one and is recorded in meta.
+    assert results.meta["gate_type"] == "analytic"
+
+
+def test_run_demo_rejects_unknown_gate_type(dataset):
+    with pytest.raises(ValueError, match="gate_type"):
+        run_demo(
+            train_records=dataset.train_records,
+            test_records=dataset.test_records,
+            ground_truth=dataset.ground_truth,
+            classes=dataset.classes,
+            template_embeddings=dataset.template_embeddings,
+            shots=5,
+            seed=0,
+            gate_type="bogus",
+        )

@@ -56,6 +56,33 @@ class FeatureRecord:
         }
 
 
+def class_index(rec: FeatureRecord) -> int:
+    """Index of the record's predicted class in its class list.
+
+    Falls back to the argmax of the text similarities when the class name is
+    not in ``classes`` (defensive; the backbone always assigns a listed
+    class).
+    """
+    try:
+        return rec.classes.index(rec.class_name)
+    except ValueError:
+        return int(np.argmax(rec.text_similarities)) if rec.text_similarities.size else 0
+
+
+def class_text_score(rec: FeatureRecord) -> float:
+    """Text score for a proposal's predicted class (raw similarity in [0, 1]).
+
+    Uses the raw similarity so weak proposals stay low and text-reliable hits
+    stay high. Shared by ``uadapt.demo.pipeline`` (synthetic + real-cache
+    demo) and ``scripts/03_run_fusion.py`` (scripted Mode A path) so the two
+    paths cannot silently drift.
+    """
+    sims = np.asarray(rec.text_similarities, dtype=float)
+    if sims.size == 0:
+        return 0.5
+    return float(np.clip(sims[class_index(rec)], 0.0, 1.0))
+
+
 class FeatureCacheEngine:
     """Runs the frozen backbone once per image, limits proposals to top-k, and
     caches the extracted features to disk."""

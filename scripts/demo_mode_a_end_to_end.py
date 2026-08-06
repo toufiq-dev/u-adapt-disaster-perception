@@ -196,6 +196,11 @@ def main() -> None:
                         help="per-class variance scaling: min-max (default; "
                              "degenerate for 2 classes) or absolute (x/2.0, "
                              "class-count-independent — use for D-Fire)")
+    parser.add_argument("--gate-type", choices=["analytic", "beta_fallback"],
+                        default="analytic",
+                        help="Mode A gate: analytic (default, pre-registered) "
+                             "or beta_fallback (pre-registered D5 "
+                             "Beta-regression variant)")
     parser.add_argument("--image-root", type=Path, default=None,
                         help="Figure 5 real-detection image dir (default: dataset config test split)")
     parser.add_argument("--out", default="outputs/supervisor_demo/results.json", type=Path)
@@ -239,6 +244,7 @@ def main() -> None:
         zero_shot_reference=zero_ref,
         transfer_reference=transfer_ref,
         norm_strategy=args.norm_strategy,
+        gate_type=args.gate_type,
     )
 
     # Coefficient ablation (Figure 6).
@@ -252,6 +258,7 @@ def main() -> None:
             shots=args.shots,
             seed=args.seed,
             norm_strategy=args.norm_strategy,
+            gate_type=args.gate_type,
             **coeff,
         )
         results.ablation[key] = ab.map50["uadapt_mode_a"]
@@ -294,12 +301,14 @@ def _print_table(results) -> None:
 
     if not isinstance(results, DemoResults):
         return
+    gate_label = "beta fallback" if results.meta.get("gate_type") == "beta_fallback" \
+        else "analytic gate"
     rows = [
         ("zero_shot_raw", "Zero-shot (raw detector scores)"),
         ("text_only", "Text-only        (w = 0)"),
         ("visual_only", "Visual-only      (w = 1)"),
         ("naive_average", "Naive averaging  (w = 0.5)"),
-        ("uadapt_mode_a", "U-ADAPT Mode A   (analytic gate)"),
+        ("uadapt_mode_a", f"U-ADAPT Mode A   ({gate_label})"),
     ]
     print("\n" + "=" * 62)
     print("U-ADAPT supervisor demo — mAP50 (subset)")

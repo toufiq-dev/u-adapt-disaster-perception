@@ -30,8 +30,12 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from uadapt.features.cache_engine import FeatureRecord
-from uadapt.fusion.mode_a_analytic import ModeAGate, fuse_scores
+from uadapt.features.cache_engine import (
+    FeatureRecord,
+    class_index,
+    class_text_score,
+)
+from uadapt.fusion.mode_a_analytic import BetaGate, ModeAGate, fuse_scores
 from uadapt.metrics.detection_metrics import (
     _iou,
     compute_map50,
@@ -98,6 +102,7 @@ def run_demo(
     zero_shot_reference: Optional[float] = None,
     transfer_reference: Optional[float] = None,
     norm_strategy: str = "min-max",
+    gate_type: str = "analytic",
 ) -> DemoResults:
     """Run the full Mode A demo on a data source. Returns :class:`DemoResults`.
 
@@ -117,11 +122,19 @@ def run_demo(
             ``min-max`` (default, support-set statistics; collapses to {0, 1}
             for C=2 classes) or ``absolute`` (x / 2.0, class-count-
             independent — fixes the 2-class degeneracy, change_log 2026-08-03).
+        gate_type: ``analytic`` (default, pre-registered Mode A gate) or
+            ``beta_fallback`` (pre-registered D5 Beta-regression variant —
+            hedges the gate toward the neutral 0.5 weight when the variance
+            terms are extreme).
     """
     classes = list(classes)
     if norm_strategy not in ("min-max", "absolute"):
         raise ValueError(
             f"unknown norm_strategy {norm_strategy!r} (choices: min-max, absolute)"
+        )
+    if gate_type not in ("analytic", "beta_fallback"):
+        raise ValueError(
+            f"unknown gate_type {gate_type!r} (choices: analytic, beta_fallback)"
         )
     rng = np.random.default_rng(seed)
 
@@ -179,7 +192,10 @@ def run_demo(
             id(r): float(v) for r, v in zip(scored, raw_visual)
         }
 
-    gate = ModeAGate(alpha=alpha, beta=beta, gamma=gamma)
+    if gate_type == "beta_fallback":
+        gate = BetaGate(alpha=alpha, beta=beta, gamma=gamma)
+    else:
+        gate = ModeAGate(alpha=alpha, beta=beta, gamma=gamma)
     gt_by = _index_gt(ground_truth)
 
     rows: List[Dict] = []
@@ -188,7 +204,7 @@ def run_demo(
             continue
         proto = protos[rec.class_name]
         affinity = visual_affinity(rec.visual_feature, proto.centroid)
-        s_text = _class_text_score(rec)
+        s_text = class_text_score(rec)
         s_visual = affinity
         gt_correct = _gt_match(rec, gt_by)
         raw_text = None
@@ -197,7 +213,7 @@ def run_demo(
             nt = float(norm_text[rec.class_name])
             nv = float(norm_visual[rec.class_name])
             text_correct = bool(
-                np.argmax(rec.text_similarities) == _class_index(rec)
+                np.argmax(rec.text_similarities) == class_index(rec)
             )
         else:
             # REAL-cache mode: per-proposal uncertainties + a NON-tautological
@@ -350,6 +366,7 @@ def run_demo(
         "n_scored_proposals": len(rows),
         "classes": classes,
         "norm_strategy": norm_strategy,
+        "gate_type": gate_type,
         # Which uncertainty estimators produced the per-proposal variance
         # terms (auditability; change_log.md 2026-08-05).
         "text_uncertainty_estimator": (
@@ -439,26 +456,6 @@ def _normalize_proposal_values(
     raise ValueError(
         f"unknown norm_strategy {norm_strategy!r} (choices: min-max, absolute)"
     )
-
-
-def _class_index(rec: FeatureRecord) -> int:
-    try:
-        return rec.classes.index(rec.class_name)
-    except ValueError:
-        return int(np.argmax(rec.text_similarities)) if rec.text_similarities.size else 0
-
-
-def _class_text_score(rec: FeatureRecord) -> float:
-    """Text score for the proposal's predicted class (raw similarity in [0,1]).
-
-    Using the raw similarity keeps distractors (weak in ALL classes) low and
-    hits of text-reliable classes high — more discriminative than a per-record
-    min-max which would spread distractors across [0,1].
-    """
-    sims = np.asarray(rec.text_similarities, dtype=float)
-    if sims.size == 0:
-        return 0.5
-    return float(np.clip(sims[_class_index(rec)], 0.0, 1.0))
 
 
 def _rank(rows: Sequence[Dict], score_key: str) -> List[Dict]:

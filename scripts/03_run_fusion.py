@@ -33,11 +33,13 @@ Mode B calibration JSON schema (``--calibration``): see the module docstring of
 src/uadapt/fusion/calibration.py — 20 labeled boxes per class with normalized
 5-D gate inputs plus text/visual correctness flags.
 
-Note on score scale: Mode A outputs the raw cached detector ``score``, while
-Mode B outputs the min-max-normalized fused score
-``(1-w)*S_text + w*S_visual``. mAP ranking is preserved under the monotonic
-normalization, and the modes are reported separately per pre-registration —
-but the two fields are not directly comparable numerically.
+Note on score scale: Mode A now emits the FUSED score
+``S_final = (1-w)*S_text + w*S_visual`` where ``S_text`` is the cached
+per-class text similarity of the predicted class and ``S_visual`` is the
+visual affinity (the documented proxy — see ``_run_mode_a``). Mode B emits
+its min-max-normalized fused score. Both are in [0, 1] but on different
+scales, so the modes are reported separately per pre-registration and the two
+fields are not directly comparable numerically.
 
 Outputs per-proposal fused scores + gate weights as JSON for 04_evaluate.py.
 """
@@ -84,11 +86,19 @@ def main() -> None:
     )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--split", default="test")
+    parser.add_argument(
+        "--gate-type",
+        choices=["analytic", "beta_fallback"],
+        default="analytic",
+        help="Mode A gate: analytic (default, pre-registered) or beta_fallback "
+        "(pre-registered D5 Beta-regression variant for boundary-clustered "
+        "variances)",
+    )
     args = parser.parse_args()
 
     from uadapt.features.cache_engine import load_cache
     from uadapt.fusion.calibration import run_mode_b
-    from uadapt.fusion.mode_a_analytic import ModeAGate
+    from uadapt.fusion.mode_a_analytic import BetaGate, ModeAGate
 
     cfg = load_yaml(args.mode_config)
     records = load_cache(args.cache_dir, split=args.split)
@@ -97,12 +107,22 @@ def main() -> None:
         if not args.prototypes:
             raise SystemExit("Mode A requires --prototypes")
         payload = load_json(args.prototypes)
-        gate = ModeAGate(
-            alpha=cfg["coefficients"]["alpha"],
-            beta=cfg["coefficients"]["beta"],
-            gamma=cfg["coefficients"]["gamma"],
-            temperature=cfg.get("temperature", 1.0),
-        )
+        if args.gate_type == "beta_fallback":
+            # Pre-registered D5 fallback (docs/pre_registration.md §10):
+            # Beta-linked gate for the boundary-clustered-variance regime.
+            gate = BetaGate(
+                alpha=cfg["coefficients"]["alpha"],
+                beta=cfg["coefficients"]["beta"],
+                gamma=cfg["coefficients"]["gamma"],
+            )
+            logger.info("Mode A using Beta-regression fallback gate")
+        else:
+            gate = ModeAGate(
+                alpha=cfg["coefficients"]["alpha"],
+                beta=cfg["coefficients"]["beta"],
+                gamma=cfg["coefficients"]["gamma"],
+                temperature=cfg.get("temperature", 1.0),
+            )
         results = _run_mode_a(records, payload, gate)
     else:  # Mode B
         if not args.prototypes:
@@ -145,15 +165,28 @@ def main() -> None:
     logger.info("wrote %d fused scores -> %s", len(results), args.out)
 
 
-def _run_mode_a(records, prototype_payload, gate: ModeAGate) -> list[dict]:
-    """Analytic gate over cached records using the text/visual prototypes.
+def _run_mode_a(records, prototype_payload, gate) -> list[dict]:
+    """Apply the analytic (or Beta-fallback) gate over cached records.
 
-    NOTE: full wiring (text-prototype similarities from CLIP embeddings,
-    support-set normalization statistics) is completed in Milestone 5; the
-    structure below is the intended data flow.
+    Emits the FUSED score ``S_final = (1 - w) * S_text + w * S_visual``:
+
+      * S_text   — cached per-class text similarity of the proposal's
+                   predicted class (raw similarity in [0, 1]; same semantics
+                   as ``uadapt.demo.pipeline._class_text_score``).
+      * S_visual — visual affinity ``a = (1 + cos(f_box, p_visual)) / 2``.
+                   There is no dedicated visual-only score in the cache, so
+                   the affinity serves as the visual-score proxy — the
+                   documented choice shared by ``uadapt.demo.pipeline`` and
+                   Mode B (``uadapt.fusion.calibration``).
+
+    Per-proposal variance terms (``norm_text_var`` / ``norm_visual_var``)
+    are still emitted for ``scripts/04_evaluate.py``'s D1/D2 arrays
+    (backward compatible: absent keys fall back to the neutral 0.5).
     """
     import numpy as np
 
+    from uadapt.features.cache_engine import class_text_score
+    from uadapt.fusion.mode_a_analytic import fuse_scores
     from uadapt.uncertainty.variance_estimators import (
         proposal_text_variance,
         visual_affinity,
@@ -174,11 +207,16 @@ def _run_mode_a(records, prototype_payload, gate: ModeAGate) -> list[dict]:
         norm_text_var = proposal_text_variance(rec.text_similarities)
         norm_visual_var = min(1.0, float(proto["sigma_visual"]))
         w = gate.weight(norm_text_var, norm_visual_var, affinity)
+        s_text = class_text_score(rec)
+        s_visual = affinity
+        fused = fuse_scores(s_text, s_visual, w)
         results.append(
             {
                 "image_id": rec.image_id,
                 "class": rec.class_name,
-                "score": float(rec.score),
+                "score": float(fused),
+                "s_text": float(s_text),
+                "s_visual": float(s_visual),
                 "bbox": rec.bbox.tolist(),
                 "gate_weight": float(w),
                 "affinity": float(affinity),
