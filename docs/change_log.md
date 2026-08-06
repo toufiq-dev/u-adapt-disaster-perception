@@ -45,6 +45,100 @@ section of `docs/pre_registration.md`.
   fallback is a pre-registered robustness contingency, not a claim of
   improvement. Full-scale re-tuning is deferred to the main run.
 
+## 2026-08-07 — D4 true γ=0 counterfactual, final Analytic-vs-Beta n=100 comparison, and 10-seed protocol scaffold
+
+- **D4 now uses the true pre-registered counterfactual** (§10):
+  `scripts/03_run_fusion.py` emits the per-proposal `w_gamma_0` (gate weight
+  with the affinity term zeroed — `gate.weight(v_text, v_visual, 0.0)`, valid
+  for both the analytic and Beta gates since the affinity term is
+  `γ·a_visual`), and `scripts/04_evaluate.py` passes it to
+  `d4_affinity_diagnostic` instead of the previous constant-0.5 array (which
+  measured a monotone transform of `w` rather than the affinity-induced shift
+  Δw = w − w_{γ=0}). Stale predictions files fall back to 0.5 (backward
+  compatible). Tests: `tests/test_04_evaluate.py` (counterfactual is genuinely
+  used; constant fallback for stale files).
+- **Final comparative n=100 runs (seed 0, k=5):** `run_real_data_validation.sh`
+  accepts `--gate-type {analytic,beta_fallback}` (env `GATE_TYPE` also
+  honored) plus a `REPORT_OUT` override; the pipeline was run twice into
+  `outputs/real_data/n100_{analytic,beta}` and
+  `scripts/generate_real_data_report.py --compare-dirs` renders the
+  side-by-side report `docs/real_data_results_final.md`. Numbers (mAP50): LADD
+  analytic 78.3% vs beta 78.4% (naive 80.4%, zero-shot 81.3%); D-Fire analytic
+  66.9% vs beta 68.3% (+1.4 pp; naive 71.8%, zero-shot 73.4%). Gate weight:
+  LADD mean w 0.699 → 0.686; D-Fire 0.856 → 0.775 — the Beta fallback softens
+  the saturation directionally but every proposal is still gated w > 0.55.
+  Pooled D1/D2/D3 are gate-independent by construction (D1/D2 do not involve
+  w; D3's disagreeing subsets are all-visual-better, so favorability stays
+  100%).
+- **Bug fix in `scripts/04_evaluate.py::_coco_to_gt`:** GT image ids are
+  remapped to the image file stems via the COCO `images` table (mirroring
+  `demo_mode_a_end_to_end.py`). Without the remap, D-Fire proposals (stem ids)
+  never matched GT (sequential int ids from the mask→box conversion) and
+  every scripted-path mAP50 for D-Fire was 0.0. LADD stem ids pass through
+  unchanged. Test: `tests/test_04_evaluate.py`.
+- **10-seed statistical-protocol scaffold** (pre-registration §9):
+  `scripts/run_10_seed_protocol.py` orchestrates, per (dataset, seed, shots k),
+  `02_build_prototypes.py --seed` → `03_run_fusion.py` (Mode A gate AND a new
+  `--gate-type naive` — `NaiveGate` in `src/uadapt/fusion/mode_a_analytic.py`,
+  the pre-registered fixed-w=0.5 'U-ADAPT w/o uncertainty gating' baseline)
+  → `04_evaluate.py` for both score files, then computes per cell a paired
+  two-sided t-test, Wilcoxon signed-rank, Cohen's d (paired d_z), and
+  Benjamini–Hochberg FDR (q = 0.05) across the full comparison family
+  (`scipy.stats.false_discovery_control`). NOTE: the scripted path evaluates
+  the FULL cached test split (no demo-path `--n-test-images` subsetting).
+  Smoke-tested with `--max-seeds 2` (4 cells, both datasets): scripted-path
+  Mode A mAP50 LADD 0.791 / D-Fire 0.678 vs naive 0.804 / 0.719 (small
+  path-vs-demo differences come from the documented visual-variance input
+  difference). The full 10-seed run was executed 2026-08-07 (results and
+  interpretation in the entry below).
+
+## 2026-08-07 — 10-seed paired statistical protocol executed (pre-registration §9): analytic results
+
+- **Full protocol run completed** (`scripts/run_10_seed_protocol.py`, 60 cells =
+  2 datasets × 3 shots × 10 seeds, `--gate-type analytic`; scripted path
+  02 → 03 → 04 on the n=100 pilot caches). Per cell: paired two-sided t-test AND
+  Wilcoxon signed-rank across the 10 seeds, Cohen's d (paired d_z),
+  Benjamini–Hochberg FDR (q = 0.05) over the full family of 12 tests. Artifacts
+  (gitignored, reproducible via the script): `outputs/real_data/ten_seed_protocol/`.
+- **Results — all 6 cells significant after FDR control and ALL unfavorable:**
+  Mode A is significantly WORSE than naive averaging (w = 0.5) at every
+  k ∈ {1, 3, 5} on both datasets (mAP50 means over 10 seeds):
+
+  | cell | Mode A | naive | d | p(t) | q(t) | W | p(W) | q(W) |
+  |---|---|---|---|---|---|---|---|---|
+  | ladd_k1 | 0.7808 | 0.8025 | −2.37 | 3.75e-05 | 0.00015 | 0.0 | 0.00195 | 0.00213 |
+  | ladd_k3 | 0.7893 | 0.8030 | −3.72 | 9.04e-07 | 5.43e-06 | 0.0 | 0.00195 | 0.00213 |
+  | ladd_k5 | 0.7887 | 0.8028 | −5.74 | 2.13e-08 | 2.56e-07 | 0.0 | 0.00195 | 0.00213 |
+  | dfire_k1 | 0.6817 | 0.7190 | −1.51 | 9.99e-04 | 0.002 | 1.0 | 0.00391 | 0.00391 |
+  | dfire_k3 | 0.6840 | 0.7200 | −2.11 | 9.29e-05 | 0.000279 | 0.0 | 0.00195 | 0.00213 |
+  | dfire_k5 | 0.6932 | 0.7205 | −1.99 | 1.43e-04 | 0.000344 | 0.0 | 0.00195 | 0.00213 |
+
+  Wilcoxon W = 0 in 5/6 cells (all 10 paired differences share the same sign) —
+  the gap is systematic, not seed noise. The naive baseline is bit-identical
+  across gate runs (fixed w = 0.5 scores), so the analytic-vs-beta comparison is
+  exactly paired.
+- **Beta contingency run also completed** (`--gate-type beta_fallback`,
+  `outputs/real_data/ten_seed_protocol_beta/`): Beta raises the Mode A mean on
+  all 6 cells (+0.1 to +0.8 pp, largest on D-Fire) and shrinks the seed-to-seed
+  spread of the Mode A − naive gap (D-Fire k1 |d| 1.51 → 1.88 despite the
+  improved mean), but every cell remains significantly below naive after FDR
+  control (per-seed wins 0–1 of 10). The fallback is a robustness contingency,
+  not a fix.
+- **Verdict recorded:** the pre-registered PRIMARY comparison (§9) is settled at
+  pilot scale — the analytic gate as implemented does not recover value from the
+  uncertainty inputs, consistent with the n=100 single-seed finding (gate
+  saturation toward the weaker visual modality; within-dataset D1/D2 ≈ 0). The
+  protocol driver is validated and reproducible (usage in the script docstring).
+- **Driver table-print fix:** explicit column separators added to the summary
+  table (p(t)/q(t) previously collided for exponent-notation values). Cosmetic
+  only — `stats.json` unchanged.
+- **Report updated:** `docs/real_data_results_final.md` gained a "10-seed paired
+  statistical protocol (pre-registration §9)" section (analytic + beta tables,
+  comparison, interpretation); every embedded number was cross-checked against
+  the two `stats.json` files. NOTE: the section is hand-appended and would be
+  overwritten by a `generate_real_data_report.py` re-run (generator wiring
+  pending).
+
 ## 2026-08-06 — Real-data medium pilot (n=100) executed: RAM-safe streaming, confound resolution, gate-saturation finding
 
 - **RAM-safe feature extraction implemented (critical for scaling).**

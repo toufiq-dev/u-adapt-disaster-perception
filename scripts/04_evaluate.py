@@ -64,14 +64,30 @@ def load_json(path: Path):
 
 
 def _coco_to_gt(coco: Dict) -> List[Dict]:
-    """Convert COCO-style annotations to the shared gt schema."""
+    """Convert COCO-style annotations to the shared gt schema.
+
+    Cache image ids are filename stems (01_extract_and_cache.py) while GT
+    image ids may be sequential COCO ints (mask->box conversion; D-Fire) or
+    already stems (LADD). The images-table remap below mirrors
+    ``demo_mode_a_end_to_end.py::_load_real_data`` (change_log 2026-08-07):
+    without it, D-Fire proposals (stem ids) never matched GT (int ids) and
+    every scripted-path mAP50 was 0.0. LADD-style stem ids are not keys of
+    the remap and pass through unchanged.
+    """
     cat_name = {c["id"]: c["name"] for c in coco["categories"]}
+    id_to_stem = {
+        str(img.get("id")): Path(img["file_name"]).stem
+        for img in coco.get("images", [])
+        if img.get("file_name")
+    }
     gts: List[Dict] = []
     for ann in coco["annotations"]:
         b = ann["bbox"]
         gts.append(
             {
-                "image_id": str(ann["image_id"]),
+                "image_id": id_to_stem.get(
+                    str(ann["image_id"]), str(ann["image_id"])
+                ),
                 "class": cat_name.get(ann["category_id"], "?"),
                 "bbox": [b[0], b[1], b[0] + b[2], b[1] + b[3]],
             }
@@ -218,7 +234,10 @@ def _diag_arrays(preds: List[Dict], correct: np.ndarray) -> Dict[str, np.ndarray
     class-similarity entropy) and ``norm_visual_var`` (support dispersion)
     since change_log 2026-08-05; when a predictions file predates that
     (or was produced by a path without the terms), the old neutral 0.5 is
-    kept so the machinery stays runnable.
+    kept so the machinery stays runnable. The D4 counterfactual
+    ``w_gamma_0`` (gate weight with the affinity term zeroed, gamma = 0)
+    is emitted since change_log 2026-08-07; stale files without it fall
+    back to 0.5 (the pre-2026-08-07 constant used by D4).
 
     D3's disagreeing subsets follow the pipeline /
     compute_pooled_diagnostics.py convention (change_log 2026-08-05):
@@ -249,6 +268,11 @@ def _diag_arrays(preds: List[Dict], correct: np.ndarray) -> Dict[str, np.ndarray
         # both D4's binning and the D3 visual_ok derivation below.
         "affinities": np.asarray([p.get("affinity", 0.0) for p in preds], dtype=float),
         "w": np.asarray([p.get("gate_weight", 0.5) for p in preds], dtype=float),
+        # D4 counterfactual weight w_{gamma=0} (affinity term zeroed); stale
+        # files fall back to the old constant 0.5.
+        "w_gamma_0": np.asarray(
+            [p.get("w_gamma_0", 0.5) for p in preds], dtype=float
+        ),
         "correct": np.asarray(correct, dtype=bool),
         # D3 disagreeing subsets (pipeline / compute_pooled convention).
         "text_ok": np.asarray(
@@ -305,7 +329,12 @@ def _per_dataset_dict(
     text_better = a["text_ok"] & ~a["visual_ok"]
     visual_better = a["visual_ok"] & ~a["text_ok"]
     d3 = d3_gate_favorability(a["w"][text_better], a["w"][visual_better])
-    d4 = d4_affinity_diagnostic(a["w"], np.full_like(a["w"], 0.5), a["affinities"])
+    # D4: the TRUE pre-registered counterfactual — the per-proposal gate
+    # weight with the affinity term zeroed (w_gamma_0, emitted by
+    # 03_run_fusion.py). Previously a constant 0.5 array was used, which
+    # measured w - 0.5 (a monotone transform of w) instead of the
+    # affinity-induced shift Delta w = w - w_{gamma=0} (2026-08-07).
+    d4 = d4_affinity_diagnostic(a["w"], a["w_gamma_0"], a["affinities"])
     # NOTE (2026-08-05): this D5 runs on the normalized arrays carried in the
     # predictions JSON, while compute_pooled_diagnostics.py runs D5 on the raw
     # absolute-scale per-proposal values (text_entropy, distance/2.0). The two

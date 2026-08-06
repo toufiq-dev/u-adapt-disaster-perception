@@ -18,6 +18,7 @@ from .calibration import (
 from .mode_a_analytic import (
     BetaGate,
     ModeAGate,
+    NaiveGate,
     analytic_gate_logit,
     beta_regression_gate,
     fuse_scores,
@@ -29,6 +30,7 @@ from .mode_b_mlp import MLPGate
 __all__ = [
     "ModeAGate",
     "BetaGate",
+    "NaiveGate",
     "analytic_gate_logit",
     "beta_regression_gate",
     "gate_weight",

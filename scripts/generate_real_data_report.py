@@ -276,26 +276,306 @@ def _literature_table(lit_ladd: Dict, lit_dfire: Dict,
     ]
 
 
+# ---------------------------------------------------------------------------
+# Comparative mode (2026-08-07): Analytic vs. Beta fallback side-by-side.
+# ---------------------------------------------------------------------------
+
+def _load_run_dir(run_dir: Path) -> Dict:
+    """Load one pipeline output directory into {ladd, dfire, pooled}."""
+    ladd = run_dir / "ladd" / "results.json"
+    dfire = run_dir / "dfire" / "results.json"
+    pooled = run_dir / "pooled_diagnostics.json"
+    for p in (ladd, dfire):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"--compare-dirs directory {run_dir} is missing {p.name} at {p} "
+                "(run scripts/run_real_data_validation.sh into this directory first)"
+            )
+    return {
+        "ladd": load_json(ladd),
+        "dfire": load_json(dfire),
+        "pooled": load_json(pooled) if pooled.exists() else None,
+    }
+
+
+def _ds_key(ds: str) -> str:
+    """'LADD' -> 'ladd', 'D-Fire' -> 'dfire' (results.json dict keys)."""
+    return "dfire" if ds == "D-Fire" else ds.lower()
+
+
+def _compare_mAP50_section(dataset: str, runs: Dict[str, Dict]) -> List[str]:
+    """Side-by-side mAP50 table: rows = methods, columns = gate labels."""
+    labels = list(runs.keys())
+    dsk = _ds_key(dataset)
+    lines = [
+        f"### {dataset} — mAP50 (n=100 subset, side-by-side)",
+        "",
+        "| Method | " + " | ".join(labels) + " | Δ (β − α) |",
+        "| --- | " + " | ".join(["---"] * len(labels)) + " | --- |",
+    ]
+    for key, label in METHODS:
+        # Gate-neutral label for the Mode A row (the per-column headers carry
+        # the gate name; the METHODS label hardcodes "(analytic gate)").
+        if key == "uadapt_mode_a":
+            label = "U-ADAPT Mode A"
+        vals = [
+            runs[lab][dsk].get("map50", {}).get(key, float("nan"))
+            for lab in labels
+        ]
+        bold = [f"**{_fmt_mAP(v)}**" if key == "uadapt_mode_a" else _fmt_mAP(v)
+                for v in vals]
+        delta = (vals[-1] - vals[0]) if len(vals) == 2 and key != "zero_shot_raw" \
+            else float("nan")
+        dcell = "—" if delta != delta else _pct_pp(delta)
+        lines.append(f"| {label} | " + " | ".join(bold) + f" | {dcell} |")
+    return lines
+
+
+def _compare_gate_section(runs: Dict[str, Dict]) -> List[str]:
+    """Gate-weight behavior per dataset, side-by-side (saturation story)."""
+    labels = list(runs.keys())
+    lines = [
+        "## Gate weight behavior (saturation diagnostic)",
+        "",
+        "| Dataset | " + " | ".join(f"{lab}: mean w" for lab in labels)
+        + " | " + " | ".join(f"{lab}: std w" for lab in labels)
+        + f" | {labels[-1]}: % > 0.55 |",
+        "| --- | " + " | ".join(["---"] * (2 * len(labels) + 1)) + " |",
+    ]
+    for ds in ("LADD", "D-Fire"):
+        rows = [
+            runs[lab][_ds_key(ds)].get("gate_stats", {}) for lab in labels
+        ]
+        mean_cells = [f"{r.get('mean_w', float('nan')):.3f}" for r in rows]
+        std_cells = [f"{r.get('std_w', float('nan')):.3f}" for r in rows]
+        above = rows[-1].get("frac_above_0.55", float("nan"))
+        lines.append(
+            f"| {ds} | " + " | ".join(mean_cells) + " | " + " | ".join(std_cells)
+            + f" | {100.0 * above:.0f}% |"
+        )
+    lines += [
+        "",
+        "> The analytic gate's mean weight saturates toward the visual "
+        "modality (LADD 0.699, D-Fire 0.856 at n=100). The Beta fallback "
+        "hedges the commitment where variances cluster at the extremes "
+        "(D5 contingency): D-Fire mean w drops 0.856 -> 0.775, LADD "
+        "0.699 -> 0.686 — still > 0.55 for essentially every proposal.",
+    ]
+    return lines
+
+
+def _compare_diag_section(runs: Dict[str, Dict]) -> List[str]:
+    """Pooled D1/D2/D3 side-by-side + per-dataset D5 Taylor-validity sentinel."""
+    labels = list(runs.keys())
+    pooled_ok = all(runs[lab].get("pooled") for lab in labels)
+    lines = [
+        "## Diagnostics D1–D5 (side-by-side)",
+        "",
+    ]
+    if not pooled_ok:
+        lines += [
+            "_Pooled diagnostics missing for one or more runs (no "
+            "pooled_diagnostics.json); only per-dataset D5 is shown._",
+            "",
+        ]
+    else:
+        lines += [
+            "Pooled D1/D2/D3 (PRIMARY claim, deviation 2026-08-03 §10; "
+            "LADD + D-Fire, n=657 proposals):",
+            "",
+            "| Diagnostic | " + " | ".join(labels) + " |",
+            "| --- | " + " | ".join(["---"] * len(labels)) + " |",
+        ]
+        for key, label in DIAG_NAMES.items():
+            cells = []
+            for lab in labels:
+                s = runs[lab]["pooled"].get("pooled", {}).get(key, {}).get("summary", {})
+                if "spearman_rho" in s:
+                    cells.append(f"ρ = **{s['spearman_rho']:+.3f}**")
+                else:
+                    cells.append(f"favorability = **{s.get('favorability_fraction', 0.0):.1%}**")
+            lines.append(f"| {label} | " + " | ".join(cells) + " |")
+        lines += [
+            "",
+            "> D1/D2 do not involve the gate weight, so they are identical "
+            "across gates by construction; D3 (favorability on disagreeing "
+            "cases) stays at 100% for both gates because the disagreeing "
+            "subsets are almost entirely *visual-better* (affinity "
+            "saturates >= 0.65) and every proposal is gated w > 0.55 — a "
+            "saturation artifact, not evidence of calibration.",
+        ]
+    # Per-dataset D5 Taylor-validity sentinel (raw absolute-scale values).
+    lines += ["", "D5 — Taylor-validity sentinel on the raw variance scale (per dataset):",
+              "", "| Dataset | " + " | ".join(labels) + " |",
+              "| --- | " + " | ".join(["---"] * len(labels)) + " |"]
+    for ds in ("LADD", "D-Fire"):
+        cells = []
+        for lab in labels:
+            pooled = runs[lab].get("pooled")
+            d5 = (pooled or {}).get("per_dataset", {}).get(_ds_key(ds), {}).get(
+                "D5_variance_distribution", {}
+            )
+            s = d5.get("summary", {})
+            frac = s.get("frac_below_0.25_or_above_0.75")
+            cells.append(
+                f"{_pct(frac) if frac is not None else '—'} "
+                f"({'FLAGGED' if frac is not None and frac > 0.30 else 'ok'})"
+            )
+        lines.append(f"| {ds} | " + " | ".join(cells) + " |")
+    lines += ["", "> D5 flags the boundary-clustered variance regime that triggers the "
+              "pre-registered Beta-regression fallback (docs/pre_registration.md §10)."]
+    return lines
+
+
+def _compare_exec_summary(runs: Dict[str, Dict]) -> List[str]:
+    """One-line per-dataset executive summary with gate deltas."""
+    labels = list(runs.keys())
+    a, b = labels[0], labels[-1]
+    lines = ["## Executive Summary", ""]
+    for ds in ("LADD", "D-Fire"):
+        dsk = _ds_key(ds)
+        ma = runs[a][dsk].get("map50", {})
+        mb = runs[b][dsk].get("map50", {})
+        ua_a, ua_b = ma.get("uadapt_mode_a"), mb.get("uadapt_mode_a")
+        naive = ma.get("naive_average")
+        zs = ma.get("zero_shot_raw")
+        lines.append(
+            f"- **{ds}** (n=100): Mode A {a} **{_fmt_mAP(ua_a)}%** vs "
+            f"{b} **{_fmt_mAP(ua_b)}%** ({_pct_pp(ua_b - ua_a)}); "
+            f"naive averaging **{_fmt_mAP(naive)}%**, zero-shot "
+            f"**{_fmt_mAP(zs)}%**."
+        )
+        worse = "naive average" if ua_b < naive else "zero-shot baseline"
+        lines.append(
+            f"  - Beta softens the gate ({_fmt_mAP(ua_a)}% -> {_fmt_mAP(ua_b)}%), "
+            f"but Mode A still underperforms the {worse} on {ds} at n=100 — "
+            "the saturation artifact is softened, not resolved."
+        )
+    lines.append("")
+    return lines
+
+
+def _build_compare_report(args) -> List[str]:
+    """Render the Analytic-vs-Beta side-by-side report body."""
+    labels = [l or d.name for l, d in zip(args.compare_labels, args.compare_dirs)] \
+        if args.compare_labels else [d.name for d in args.compare_dirs]
+    runs = {lab: _load_run_dir(d) for lab, d in zip(labels, args.compare_dirs)}
+
+    pilot_ns = [
+        r["meta"]["n_test_images"]
+        for r in (runs[labels[0]]["ladd"], runs[labels[0]]["dfire"])
+        if r.get("meta", {}).get("n_test_images") is not None
+    ]
+    pilot = args.pilot or any(n <= 100 for n in pilot_ns)
+    label_n = f"n={max(pilot_ns)}" if (pilot and pilot_ns and not args.pilot) else args.pilot_n
+    title = (
+        f"# U-ADAPT — Final Comparative Results ({label_n} subset): "
+        "Analytic vs. Beta fallback"
+        if pilot
+        else "# U-ADAPT — Comparative Results: Analytic vs. Beta fallback"
+    )
+    lines = [
+        title,
+        "",
+        f"*Generated {args.report_date} by `scripts/generate_real_data_report.py` "
+        "(`--compare-dirs`). Gates: " + ", ".join(labels) + ".*",
+        "",
+    ]
+    if pilot:
+        lines += [
+            "> 🧪 **PILOT RESULTS (n=100 subset)** — preliminary pipeline check on "
+            "the first 100 images per dataset (Grounding DINO Swin-T, top-k=100, "
+            "k=5 shots, seed 0). These numbers are NOT final thesis results; "
+            "the full-data run and the 10-seed protocol "
+            "(`scripts/run_10_seed_protocol.py`) supersede them.",
+            "",
+        ]
+    lines += _compare_exec_summary(runs)
+    lines += ["---", "", "## mAP50 results", ""]
+    lines += _compare_mAP50_section("LADD", runs)
+    lines += ["", "---", ""]
+    lines += _compare_mAP50_section("D-Fire", runs)
+    lines += ["", "---", ""]
+    lines += _compare_gate_section(runs)
+    lines += ["", "---", ""]
+    lines += _compare_diag_section(runs)
+    lines += ["", "---", ""]
+
+    lit_ladd = _literature_numbers(load_yaml(args.ladd_config))
+    lit_dfire = _literature_numbers(load_yaml(args.dfire_config))
+    lines += ["## Comparison to literature baselines", "",
+              "Michailidou et al. (Table III, Grounding DINO) floor/ceiling vs "
+              "the Mode A results above (n=100 subset, per gate):", ""]
+    for ds, lit, runkey in (("LADD", lit_ladd, "ladd"), ("D-Fire", lit_dfire, "dfire")):
+        cells = []
+        for lab in labels:
+            res = runs[lab][runkey]
+            v = res.get("map50", {}).get("uadapt_mode_a", float("nan"))
+            g = res.get("gap_recovery", {}).get("gap_recovery_vs_literature")
+            cells.append(f"{_fmt_mAP(v)}% ({_fmt_gap_closed(g)} closed)")
+        lines.append(
+            f"- **{ds}:** zero-shot floor {lit['zero_shot']:.1f}% → transfer "
+            f"ceiling {lit['transfer']:.1f}% (gap {lit['gap_pp']:.1f} pp). "
+            f"U-ADAPT Mode A — " + ", ".join(f"{lab}: {c}" for lab, c in zip(labels, cells)) + "."
+        )
+    lines.append("")
+    return lines
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate the real-data validation markdown report "
-                    "(docs/real_data_results.md)."
+                    "(docs/real_data_results.md), or the Analytic-vs-Beta "
+                    "comparative report (--compare-dirs)."
     )
-    parser.add_argument("--ladd-results", required=True, type=Path)
-    parser.add_argument("--dfire-results", required=True, type=Path)
+    # Comparative mode: two or more pipeline output directories, each
+    # containing {ladd,dfire}/results.json + pooled_diagnostics.json.
+    parser.add_argument("--compare-dirs", nargs="+", type=Path, default=None,
+                        help="pipeline output directories to compare side-by-side "
+                             "(e.g. outputs/real_data/n100_analytic "
+                             "outputs/real_data/n100_beta) -> writes the "
+                             "Analytic-vs-Beta comparative report")
+    parser.add_argument("--compare-labels", nargs="+", default=None,
+                        help="display labels for --compare-dirs (default: directory "
+                             "names)")
+    parser.add_argument("--ladd-results", type=Path)
+    parser.add_argument("--dfire-results", type=Path)
     parser.add_argument("--pooled-diagnostics", type=Path, default=None,
                         help="output of compute_pooled_diagnostics.py "
                              "(recommended; report notes when absent)")
     parser.add_argument("--ladd-config", default="configs/datasets/ladd.yaml", type=Path)
     parser.add_argument("--dfire-config", default="configs/datasets/dfire.yaml", type=Path)
-    parser.add_argument("--out", default="docs/real_data_results.md", type=Path)
+    parser.add_argument("--out", default=None, type=Path,
+                        help="output path (default: docs/real_data_results.md in "
+                             "single-run mode; docs/real_data_results_final.md "
+                             "in --compare-dirs mode)")
     parser.add_argument("--report-date", default=date.today().isoformat())
     parser.add_argument("--pilot", action="store_true",
                         help="force pilot labeling (auto-detected from "
                              "meta.n_test_images < 100)")
-    parser.add_argument("--pilot-n", default="n=10",
-                        help="pilot label size text (default: 'n=10')")
+    parser.add_argument("--pilot-n", default="n=100",
+                        help="pilot label size text (default: 'n=100')")
     args = parser.parse_args()
+
+    # --- Comparative mode -------------------------------------------------
+    if args.compare_dirs:
+        if len(args.compare_dirs) < 2:
+            parser.error("--compare-dirs needs at least two directories")
+        if args.compare_labels and len(args.compare_labels) != len(args.compare_dirs):
+            parser.error("--compare-labels must match --compare-dirs in count")
+        args.out = args.out or Path("docs/real_data_results_final.md")
+        lines = _build_compare_report(args)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.out, "w") as fh:
+            fh.write("\n".join(lines))
+        print(f"wrote comparative report -> {args.out}")
+        return
+
+    # --- Single-run mode (backward compatible) -----------------------------
+    if args.ladd_results is None or args.dfire_results is None:
+        parser.error("--ladd-results and --dfire-results are required in single-run "
+                     "mode (or pass --compare-dirs for the comparative report)")
+    args.out = args.out or Path("docs/real_data_results.md")
 
     for p in (args.ladd_results, args.dfire_results):
         if not p.exists():

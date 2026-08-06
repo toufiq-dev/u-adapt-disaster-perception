@@ -88,17 +88,19 @@ def main() -> None:
     parser.add_argument("--split", default="test")
     parser.add_argument(
         "--gate-type",
-        choices=["analytic", "beta_fallback"],
+        choices=["analytic", "beta_fallback", "naive"],
         default="analytic",
-        help="Mode A gate: analytic (default, pre-registered) or beta_fallback "
+        help="Mode A gate: analytic (default, pre-registered), beta_fallback "
         "(pre-registered D5 Beta-regression variant for boundary-clustered "
-        "variances)",
+        "variances), or naive (fixed w = 0.5 equal averaging — the "
+        "pre-registered 'U-ADAPT w/o uncertainty gating' baseline and the "
+        "naive-averaging comparator of the 10-seed protocol §9)",
     )
     args = parser.parse_args()
 
     from uadapt.features.cache_engine import load_cache
     from uadapt.fusion.calibration import run_mode_b
-    from uadapt.fusion.mode_a_analytic import BetaGate, ModeAGate
+    from uadapt.fusion.mode_a_analytic import BetaGate, ModeAGate, NaiveGate
 
     cfg = load_yaml(args.mode_config)
     records = load_cache(args.cache_dir, split=args.split)
@@ -116,6 +118,12 @@ def main() -> None:
                 gamma=cfg["coefficients"]["gamma"],
             )
             logger.info("Mode A using Beta-regression fallback gate")
+        elif args.gate_type == "naive":
+            # Fixed w = 0.5 equal averaging — the pre-registered baseline
+            # 'U-ADAPT w/o uncertainty gating' (proposal §8) and the naive
+            # averaging comparator of the 10-seed protocol (§9).
+            gate = NaiveGate()
+            logger.info("Mode A using naive gate (w = 0.5 fixed)")
         else:
             gate = ModeAGate(
                 alpha=cfg["coefficients"]["alpha"],
@@ -182,6 +190,8 @@ def _run_mode_a(records, prototype_payload, gate) -> list[dict]:
     Per-proposal variance terms (``norm_text_var`` / ``norm_visual_var``)
     are still emitted for ``scripts/04_evaluate.py``'s D1/D2 arrays
     (backward compatible: absent keys fall back to the neutral 0.5).
+    ``w_gamma_0`` is the D4 counterfactual weight with the affinity term
+    zeroed (gamma = 0), per the pre-registered D4 definition.
     """
     import numpy as np
 
@@ -207,6 +217,12 @@ def _run_mode_a(records, prototype_payload, gate) -> list[dict]:
         norm_text_var = proposal_text_variance(rec.text_similarities)
         norm_visual_var = min(1.0, float(proto["sigma_visual"]))
         w = gate.weight(norm_text_var, norm_visual_var, affinity)
+        # D4 counterfactual (pre-registration §10): the gate weight with the
+        # affinity coefficient zeroed, w_{gamma=0} = gate.weight(v_t, v_v, 0).
+        # The affinity term enters the logit as gamma * a_visual, so setting
+        # the affinity input to 0.0 is exactly the gamma=0 counterfactual for
+        # BOTH the analytic gate and the Beta fallback.
+        w_gamma_0 = gate.weight(norm_text_var, norm_visual_var, 0.0)
         s_text = class_text_score(rec)
         s_visual = affinity
         fused = fuse_scores(s_text, s_visual, w)
@@ -219,6 +235,9 @@ def _run_mode_a(records, prototype_payload, gate) -> list[dict]:
                 "s_visual": float(s_visual),
                 "bbox": rec.bbox.tolist(),
                 "gate_weight": float(w),
+                # D4 counterfactual weight (gamma=0, affinity removed); consumed
+                # by 04_evaluate.py's D4_affinity_diagnostic.
+                "w_gamma_0": float(w_gamma_0),
                 "affinity": float(affinity),
                 # Per-proposal variance terms consumed by 04_evaluate.py's
                 # D1/D2 arrays (backward compatible: absent keys fall back to

@@ -132,3 +132,42 @@ def test_run_mode_a_skips_records_without_prototype():
     rec = _make_record(class_name="smoke")  # payload has only 'fire'
     out = mod._run_mode_a([rec], _prototype_payload(), ModeAGate())
     assert out == []
+
+
+def test_run_mode_a_naive_gate_emits_w_half_average():
+    """--gate-type naive (NaiveGate) must emit w = 0.5 and the equal
+    average S_final = (S_text + S_visual) / 2 — the pre-registered
+    'U-ADAPT w/o uncertainty gating' baseline used as the naive averaging
+    comparator of the 10-seed protocol (§9)."""
+    mod = _load_03()
+    from uadapt.fusion.mode_a_analytic import NaiveGate
+
+    rec = _make_record(score=0.2, sims=(0.9,), feature=(1.0, 0.0, 0.0))
+    out = mod._run_mode_a([rec], _prototype_payload(), NaiveGate())
+    assert len(out) == 1
+    row = out[0]
+    assert row["gate_weight"] == pytest.approx(0.5)
+    assert row["w_gamma_0"] == pytest.approx(0.5)  # naive gate: no affinity term
+    expected = 0.5 * row["s_text"] + 0.5 * row["s_visual"]
+    assert row["score"] == pytest.approx(expected)
+
+
+def test_run_mode_a_emits_w_gamma_0_counterfactual():
+    """The D4 counterfactual w_gamma_0 (affinity zeroed) is emitted per
+    proposal and differs from w whenever affinity != 0."""
+    mod = _load_03()
+    from uadapt.fusion.mode_a_analytic import ModeAGate
+
+    rec = _make_record(score=0.2, sims=(0.9,), feature=(1.0, 0.0, 0.0))
+    payload = _prototype_payload(centroid=(1.0, 0.0, 0.0))  # affinity = 1.0
+    row = mod._run_mode_a([rec], payload, ModeAGate())[0]
+    assert "w_gamma_0" in row
+    assert row["w_gamma_0"] != pytest.approx(row["gate_weight"])
+    # gamma=0 counterfactual = same variance inputs, affinity set to 0.
+    from uadapt.fusion.mode_a_analytic import gate_weight
+
+    expected = gate_weight(row["norm_text_var"], row["norm_visual_var"], 0.0)
+    assert row["w_gamma_0"] == pytest.approx(expected)
+    # With affinity zeroed the weight is exactly sigma(0) = 0.5 for these
+    # variance-free inputs.
+    assert row["w_gamma_0"] == pytest.approx(0.5)

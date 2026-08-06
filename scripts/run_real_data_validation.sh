@@ -17,7 +17,7 @@
 #                         docs/real_data_results.md
 #
 # Usage:
-#   bash scripts/run_real_data_validation.sh
+#   bash scripts/run_real_data_validation.sh [--gate-type analytic|beta_fallback]
 #
 # Env overrides (all optional):
 #   PYTHON            python interpreter          (default: python3)
@@ -30,7 +30,22 @@
 #   N_TEST_IMAGES     test subset size            (default: 100000 = all images)
 #   LADD_GT / DFIRE_GT  COCO annotation JSONs     (default: data/annotations/{ladd,dfire}_test.json)
 #   LADD_NORM / DFIRE_NORM  normalization strategy (default: min-max / absolute)
+#   GATE_TYPE         Mode A gate                  (default: analytic; also via --gate-type)
+#   REPORT_OUT        markdown report path         (default: docs/real_data_results.md)
 #   SKIP_PREREQS      set to 1 to skip step [0] gates (dry-run / CI only)
+#
+# For the pre-registered Analytic-vs-Beta comparison (2026-08-07) run the
+# pipeline TWICE with different --gate-type and OUT_ROOT/REPORT_OUT, then
+# scripts/generate_real_data_report.py --compare-dirs ... writes the
+# side-by-side report (docs/real_data_results_final.md):
+#   PYTHON=.venv/bin/python N_TEST_IMAGES=100 \\
+#     OUT_ROOT=outputs/real_data/n100_analytic \\
+#     REPORT_OUT=outputs/real_data/n100_analytic/report.md \\
+#     bash scripts/run_real_data_validation.sh --gate-type analytic
+#   PYTHON=.venv/bin/python N_TEST_IMAGES=100 \\
+#     OUT_ROOT=outputs/real_data/n100_beta \\
+#     REPORT_OUT=outputs/real_data/n100_beta/report.md \\
+#     bash scripts/run_real_data_validation.sh --gate-type beta_fallback
 #
 # Every step echoes progress; failures abort immediately (set -e).
 # Runtime gate: torch + transformers are checked before step [1]; the pipeline
@@ -53,10 +68,37 @@ LADD_GT="${LADD_GT:-data/annotations/ladd_test.json}"
 DFIRE_GT="${DFIRE_GT:-data/annotations/dfire_test.json}"
 LADD_NORM="${LADD_NORM:-min-max}"
 DFIRE_NORM="${DFIRE_NORM:-absolute}"
+GATE_TYPE="${GATE_TYPE:-analytic}"
+REPORT_OUT="${REPORT_OUT:-docs/real_data_results.md}"
 SKIP_PREREQS="${SKIP_PREREQS:-0}"
 
 step() { echo; echo "=== [$1/6] $2 ==="; }
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Minimal CLI: --gate-type <analytic|beta_fallback> (env GATE_TYPE also
+# honored). Parsed AFTER step()/die() are defined so error paths work.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --gate-type)
+            GATE_TYPE="${2:?--gate-type requires a value}"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: bash scripts/run_real_data_validation.sh [--gate-type analytic|beta_fallback]"
+            echo "Env overrides: PYTHON CACHE_ROOT OUT_ROOT MODEL_CONFIG TOP_K SHOTS SEED"
+            echo "              N_TEST_IMAGES LADD_GT DFIRE_GT LADD_NORM DFIRE_NORM"
+            echo "              GATE_TYPE REPORT_OUT SKIP_PREREQS"
+            exit 0
+            ;;
+        *)
+            die "unknown argument: $1 (--help for usage)"
+            ;;
+    esac
+done
+case "$GATE_TYPE" in
+    analytic|beta_fallback) ;;
+    *) die "unsupported --gate-type '$GATE_TYPE' (choices: analytic, beta_fallback)" ;;
+esac
 
 count_images() {
     # Number of jpg/jpeg/png files under a directory (0 when absent).
@@ -160,15 +202,16 @@ done
 # ---------------------------------------------------------------------------
 # [3/6] Mode A evaluation on real cached features
 # ---------------------------------------------------------------------------
-step 3 "Mode A evaluation (real cache; LADD=$LADD_NORM, D-Fire=$DFIRE_NORM)"
+step 3 "Mode A evaluation (real cache; LADD=$LADD_NORM, D-Fire=$DFIRE_NORM, gate=$GATE_TYPE)"
 run_eval() {
     local ds="$1" norm="$2" gt="$3"
-    echo "  evaluating $ds (norm-strategy=$norm, shots=$SHOTS, n-test-images=$N_TEST_IMAGES) ..."
+    echo "  evaluating $ds (norm-strategy=$norm, gate=$GATE_TYPE, shots=$SHOTS, n-test-images=$N_TEST_IMAGES) ..."
     "$PY" scripts/demo_mode_a_end_to_end.py \
         --cache-dir "$CACHE_ROOT/$ds" \
         --dataset-config "configs/datasets/$ds.yaml" \
         --ground-truth "$gt" \
         --norm-strategy "$norm" \
+        --gate-type "$GATE_TYPE" \
         --shots "$SHOTS" \
         --seed "$SEED" \
         --n-test-images "$N_TEST_IMAGES" \
@@ -191,12 +234,12 @@ step 4 "Pooled D1/D2/D3 diagnostics (LADD + D-Fire)"
 # ---------------------------------------------------------------------------
 # [5/6] Markdown report
 # ---------------------------------------------------------------------------
-step 5 "Generate report (docs/real_data_results.md)"
+step 5 "Generate report ($REPORT_OUT)"
 "$PY" scripts/generate_real_data_report.py \
     --ladd-results "$OUT_ROOT/ladd/results.json" \
     --dfire-results "$OUT_ROOT/dfire/results.json" \
     --pooled-diagnostics "$OUT_ROOT/pooled_diagnostics.json" \
-    --out docs/real_data_results.md
+    --out "$REPORT_OUT"
 
 # ---------------------------------------------------------------------------
 # [6/6] Summary
@@ -205,7 +248,7 @@ step 6 "Done"
 echo "  Results JSON   : $OUT_ROOT/{ladd,dfire}/results.json"
 echo "  Proposal data  : $OUT_ROOT/{ladd,dfire}/proposal_level.json"
 echo "  Pooled diag    : $OUT_ROOT/pooled_diagnostics.json"
-echo "  Report         : docs/real_data_results.md"
+echo "  Report         : $REPORT_OUT"
 echo ""
 echo "Next: 10 seeds + paired tests (pre-registration §9), mAP50:95/ECE/Brier via"
 echo "scripts/04_evaluate.py, and cross-backbone repeats (RQ5)."

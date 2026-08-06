@@ -323,3 +323,45 @@ class BetaGate:
         return (precision * mu + self.prior_precision * self.prior_weight) / (
             precision + self.prior_precision
         )
+
+
+@dataclass
+class NaiveGate:
+    """Fixed-weight gate w = 0.5 — the pre-registered baselines.
+
+    * "U-ADAPT w/o uncertainty gating": fixed w = 0.5 equal averaging
+      (proposal §8) — the ablation of the core contribution.
+    * The naive averaging comparator of the 10-seed statistical protocol
+      (pre-registration §9): S_final = (S_text + S_visual) / 2.
+
+    ``scripts/03_run_fusion.py --gate-type naive`` uses this gate so the
+    w = 0.5 baseline goes through the exact same scoring/evaluation path as
+    Mode A. Holds no state; training-free by construction.
+    """
+
+    w_fixed: float = NEUTRAL_PRIOR_WEIGHT  # 0.5
+
+    def weight(
+        self,
+        norm_text_variance: float = 0.0,
+        norm_visual_variance: float = 0.0,
+        norm_affinity: float = 0.0,
+    ) -> float:
+        return self.w_fixed
+
+    def fused_score(
+        self,
+        s_text: float,
+        s_visual: float,
+        norm_text_variance: float = 0.0,
+        norm_visual_variance: float = 0.0,
+        norm_affinity: float = 0.0,
+    ) -> float:
+        return fuse_scores(s_text, s_visual, self.w_fixed)
+
+    def predict_batch(
+        self,
+        inputs: List[Mapping[str, float]],
+    ) -> np.ndarray:
+        """Vectorized fixed weights (same input schema as the other gates)."""
+        return np.full(len(inputs), self.w_fixed, dtype=np.float64)
