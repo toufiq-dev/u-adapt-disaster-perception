@@ -30,12 +30,19 @@ cd /Users/toufiq/Developer/u-adapt-disaster-perception
 git push origin main
 ```
 
-> ℹ️ **Before you run Phase A**, make sure you can obtain a **verified LADD
-> download URL**. The official LADD repo (huyhieupham/LADD) is offline; the
-> script refuses to guess a URL (Milestone-1 policy). The working source is the
-> Kaggle **"Lacmus Drone Dataset (LaDD)"** page (or the author page / Zenodo).
-> You also need a **LADD train COCO GT** — see §A3.2. D-Fire needs nothing
-> special (anonymous HF mirror).
+> ℹ️ **Prefer upload over download?** If you already have the complete LADD
+> raw data locally (1,365 images ≈ 9.3 GB, as on the development Mac), skip
+> §A3.2 entirely and follow **`docs/colab_upload_raw_guide.md`** — zip LADD
+> on the Mac, upload to Drive, pull into Colab, and run the D-Fire mirror
+> download concurrently. That guide replaces §A3.2 (manual URL + train GT)
+> with a zero-download, zero-risk path.
+>
+> Otherwise: before you run Phase A, make sure you can obtain a **verified
+> LADD download URL**. The official LADD repo (huyhieupham/LADD) is offline;
+> the script refuses to guess a URL (Milestone-1 policy). The working source
+> is the Kaggle **"Lacmus Drone Dataset (LaDD)"** page (or the author page /
+> Zenodo). You also need a **LADD train COCO GT** — see §A3.2. D-Fire needs
+> nothing special (anonymous HF mirror).
 
 ---
 
