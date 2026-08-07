@@ -4,6 +4,59 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-07 — Mode B 10-seed protocol tooling (pre-registered contingency Risk R3): soft-target fix, calibration sampler, protocol --mode B, report generator, Colab guide
+
+- **Soft-target bug fix vs. the pre-registration** (proposal §5.4.2):
+  `src/uadapt/fusion/mode_b_logreg.py::soft_targets` had the two disagreement
+  branches SWAPPED — it assigned w* = 1 when TEXT was correct alone (i.e.
+  "trust visual" when the text modality was right) and w* = 0 when VISUAL was
+  correct alone, the inverse of the pre-registered formula. Since `w` is the
+  weight on the visual score, the old mapping taught the gate to lean on the
+  WRONG modality whenever the modalities disagreed. Fixed to `w* = 1` iff
+  visual-only correct, `w* = 0` iff text-only correct; the pinning test in
+  `tests/test_mode_b_calibration.py` was updated. **Pre-fix Mode B numbers
+  learned the inverse mapping and must not be compared with post-fix runs.**
+- **Calibration-set sampler added** — `src/uadapt/fusion/calibration_set.py`
+  + `scripts/build_calibration_set.py`: builds the Mode B 20-box/class
+  `--calibration` JSON from the cached TRAIN split — per-class stratified
+  sampling of same-class GT-matched boxes (IoU ≥ 0.5, the pre-registered
+  "labeled boxes"), seeded and deterministic, strictly disjoint from the
+  seed's k-shot support examples (image ids from the prototype payload) and
+  from the test split. Per-box gate inputs mirror
+  `calibration.record_gate_input` (s_visual = a_visual = affinity proxy;
+  sigma2_text falls back to 0.5). The output carries a `sampling` audit
+  block (per-class eligibility counts); classes with fewer eligible boxes
+  than requested keep ALL of them — at n=100 pilot scale LADD yields ~5-6
+  person boxes and D-Fire ~1 (far below 20), recorded honestly.
+  Tests: `tests/test_calibration_set.py` (11 tests).
+- **Tiny-calibration robustness guard** (`LogRegGate.fit_cv`): folds with
+  empty train or test partitions are skipped (5-fold CV presumes ≥ 5
+  samples; pilot cells with 1-6 calibration boxes now produce a CV over the
+  valid folds, or `cv_scores = None` when none qualify). Previously a 1-box
+  calibration set crashed with a zero-division. Tests added.
+- **`scripts/run_10_seed_protocol.py` gained `--mode {A,B}`** (pre-registration
+  §10, Risk R3): `--mode B` runs the SAME per-cell loop (02 → 05 → 03 → 04)
+  with the learned logreg gate as the primary method — per-seed calibration
+  built by 05, fused scores by `03_run_fusion.py --mode B --mode-config
+  configs/modes/mode_B_logreg.yaml`, the w = 0.5 naive baseline unchanged,
+  and a per-dataset zero-shot mAP50 (raw detector scores on the full cached
+  test split, computed once, stored in `meta.zero_shot_map50`). Per-cell
+  calibration counts are aggregated across seeds into
+  `cells[k]["calibration"]` (min/max). `--gate-type` is ignored in Mode B.
+- **Report generator gained a standalone Mode B report**
+  (`scripts/generate_real_data_report.py --mode-b-stats [--analytic-stats]`,
+  default out `docs/real_data_results_modeB.md`): the Mode B vs naive paired
+  table (t-test, Wilcoxon, Cohen's d, BH-FDR over 12 tests), a per-cell
+  calibration audit (true sampled counts with seed ranges), a four-way
+  comparison (zero-shot / naive / Mode A / Mode B per-cell mAP50 means), and
+  a data-driven verdict on whether Mode B beat naive — including the
+  pilot-scale caveats (tiny calibration sets, affinity-saturation-degenerate
+  soft targets) and the pre-registered fallback-narrative guidance (Risk R3).
+- **Colab execution guide added**: `docs/colab_mode_b_guide.md` — a
+  step-by-step runbook for the full Mode B 10-seed protocol and report on
+  free Colab (CPU is sufficient; the protocol is cache-only; the upload
+  bundle is ~5-40 MB).
+
 ## 2026-08-07 — Gate-saturation quantification, Mode A fused-score fix in 03, Beta-regression fallback gate (D5 contingency)
 
 - **Saturation analysis tool added** (`scripts/analyze_saturation.py`) — loads

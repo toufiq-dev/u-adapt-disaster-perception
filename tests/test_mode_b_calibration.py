@@ -117,16 +117,88 @@ def test_build_calibration_matrices_shape():
 
 
 def test_soft_targets_pre_registered_rules():
+    """Soft targets follow proposal §5.4.2: w* = 1 (trust visual) when VISUAL
+    alone is correct, w* = 0 (trust text) when TEXT alone is correct.
+
+    Fixed 2026-08-07: the two disagreement branches were previously swapped
+    (text-only correct -> w* = 1), contradicting the pre-registration.
+    """
     s_text = np.array([0.9, 0.2, 0.6, 0.4])
     s_visual = np.array([0.2, 0.8, 0.6, 0.4])
     tc = np.array([True, False, True, False])
     vc = np.array([False, True, True, False])
     t = soft_targets(s_text, s_visual, tc, vc)
-    assert t[0] == 1.0  # text-only correct
-    assert t[1] == 0.0  # visual-only correct
+    assert t[0] == 0.0  # text-only correct -> w* = 0 (trust text)
+    assert t[1] == 1.0  # visual-only correct -> w* = 1 (trust visual)
     # both / neither -> sigmoid(S_visual - S_text)
     assert t[2] == pytest.approx(0.5)
     assert t[3] == pytest.approx(0.5)
+
+
+def _sigmoid_ref(z):
+    """Module-identical sigmoid (clipped, same as soft_targets' helper)."""
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -30.0, 30.0)))
+
+
+def test_soft_targets_all_four_combinations_pre_registered():
+    """Exhaustive check of every (text_correct, visual_correct) combination
+    against proposal §5.4.2, including the EXACT soft-margin values:
+
+      * (True,  False) -> w* = 0.0                 (text correct alone: trust text)
+      * (False, True)  -> w* = 1.0                 (visual correct alone: trust visual)
+      * (True,  True)  -> w* = sigmoid(S_v - S_t)  (both correct: soft margin)
+      * (False, False) -> w* = sigmoid(S_v - S_t)  (neither correct: soft margin)
+    """
+    # One case per combination, with deliberately asymmetric scores so the
+    # soft-margin check is non-trivial (S_visual != S_text).
+    s_text = np.array([0.9, 0.2, 0.6, 0.4])
+    s_visual = np.array([0.2, 0.8, 0.4, 0.9])
+    tc = np.array([True, False, True, False])
+    vc = np.array([False, True, True, False])
+    t = soft_targets(s_text, s_visual, tc, vc)
+
+    # (True, False) -> w* = 0.0
+    assert tc[0] and not vc[0]
+    assert t[0] == pytest.approx(0.0)
+    # (False, True) -> w* = 1.0
+    assert vc[1] and not tc[1]
+    assert t[1] == pytest.approx(1.0)
+    # (True, True) -> soft margin, EXACT sigmoid of the score difference.
+    assert tc[2] and vc[2]
+    assert t[2] == pytest.approx(_sigmoid_ref(s_visual[2] - s_text[2]))
+    # (False, False) -> soft margin, EXACT sigmoid of the score difference.
+    assert not tc[3] and not vc[3]
+    assert t[3] == pytest.approx(_sigmoid_ref(s_visual[3] - s_text[3]))
+    # Targets stay in [0, 1] and the disagreement cases are exact 0/1.
+    assert np.all((t >= 0.0) & (t <= 1.0))
+    assert set(t[:2]) == {0.0, 1.0}
+
+
+def test_soft_targets_matches_reference_implementation():
+    """Property test: soft_targets() is bit-identical to a from-scratch
+    reference of the pre-registered formula over a random batch that covers
+    ALL four (text_correct, visual_correct) combinations."""
+    rng = np.random.default_rng(42)
+    n = 400
+    s_text = rng.uniform(0.0, 1.0, n)
+    s_visual = rng.uniform(0.0, 1.0, n)
+    tc = rng.random(n) < 0.5
+    vc = rng.random(n) < 0.5
+
+    def _reference(st, sv, t_c, v_c):
+        out = np.zeros(n)
+        both = t_c & v_c
+        neither = ~t_c & ~v_c
+        out[v_c & ~t_c] = 1.0
+        out[t_c & ~v_c] = 0.0
+        out[both | neither] = _sigmoid_ref(sv[both | neither] - st[both | neither])
+        return out
+
+    t = soft_targets(s_text, s_visual, tc, vc)
+    np.testing.assert_allclose(t, _reference(s_text, s_visual, tc, vc), atol=1e-12)
+    # Guard: the batch actually exercised all four combinations.
+    assert (tc & ~vc).any() and (~tc & vc).any()
+    assert (tc & vc).any() and (~tc & ~vc).any()
 
 
 def test_min_max_normalization():
@@ -279,6 +351,31 @@ def test_run_mode_b_empty_calibration_raises():
     cal = {"boxes_per_class": 20, "classes": ["fire"], "samples": []}
     with pytest.raises(ValueError):
         run_mode_b(records, cal, _make_prototype_payload(), LOGGREG_CFG)
+
+
+def test_run_mode_b_tiny_calibration_set_ok():
+    """Pilot-scale tiny calibration sets (3 samples) must not crash CV."""
+    records = _make_records(n=4)
+    cal = {"boxes_per_class": 20, "classes": ["fire"],
+           "samples": _make_calibration_samples(3, seed=11)}
+    result = run_mode_b(records, cal, _make_prototype_payload(seed=3), LOGGREG_CFG)
+    assert len(result.scores) == len(records)
+    assert result.cv_scores is not None and 1 <= len(result.cv_scores) < 5
+    for s in result.scores:
+        assert 0.0 < s["gate_weight"] < 1.0
+
+
+def test_run_mode_b_single_sample_calibration_ok():
+    """A single calibration sample (D-Fire pilot extreme) must not crash:
+    no valid CV fold, but the gate still fits on the full set."""
+    records = _make_records(n=4)
+    cal = {"boxes_per_class": 20, "classes": ["fire"],
+           "samples": _make_calibration_samples(1, seed=12)}
+    result = run_mode_b(records, cal, _make_prototype_payload(seed=4), LOGGREG_CFG)
+    assert len(result.scores) == len(records)
+    assert result.cv_scores is None  # no non-degenerate fold
+    for s in result.scores:
+        assert 0.0 < s["gate_weight"] < 1.0
 
 
 def test_record_gate_input_skips_missing_prototype():

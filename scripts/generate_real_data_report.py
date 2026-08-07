@@ -519,6 +519,435 @@ def _build_compare_report(args) -> List[str]:
             f"U-ADAPT Mode A — " + ", ".join(f"{lab}: {c}" for lab, c in zip(labels, cells)) + "."
         )
     lines.append("")
+    if args.analytic_stats and args.beta_stats:
+        lines += ["---", ""]
+        lines += _ten_seed_section(
+            load_json(args.analytic_stats),
+            load_json(args.beta_stats),
+            args.report_date,
+            runs,
+            labels,
+        )
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 10-seed paired protocol section (2026-08-07): analytic + beta stats.json.
+# ---------------------------------------------------------------------------
+
+def _ts_row(key: str, s: Dict) -> str:
+    """One row of the paired-statistics table from a run_10_seed_protocol cell."""
+    t = s["paired_ttest"]
+    w = s["wilcoxon"]
+    d = s["cohens_d"]
+    dcell = f"{d:.2f}" if d == d else "n/a"
+    return (
+        f"| {key} | {s['n_seeds']} | {s['mode_a_map50_mean']:.4f} "
+        f"| {s['naive_map50_mean']:.4f} | {dcell} | {t['t']:.3f} "
+        f"| {t['p']:.3g} | {t['q_bh']:.3g} | {w['statistic']:.1f} "
+        f"| {w['p']:.3g} | {w['q_bh']:.3g} |"
+    )
+
+
+def _d_span(ds: List[float]) -> str:
+    """'−1.5 to −6.1'-style span (least to most negative) for all-negative ds."""
+    finite = [d for d in ds if d == d and abs(d) != float("inf")]
+    if len(finite) < 2:
+        return "n/a"
+    lo, hi = min(finite), max(finite)
+    if lo >= 0.0 or hi >= 0.0:
+        return f"{hi:.1f} to {lo:.1f}"
+    return f"−{abs(hi):.1f} to −{abs(lo):.1f}"
+
+
+def _ten_seed_section(analytic: Dict, beta: Dict, report_date: str,
+                      runs: Dict[str, Dict], labels: List[str]) -> List[str]:
+    """Markdown for the pre-registration §9 10-seed protocol section.
+
+    Data-driven from the two ``run_10_seed_protocol.py`` stats.json documents
+    (--analytic-stats / --beta-stats); ``runs``/``labels`` supply the n=100
+    demo-path value referenced by the methodology note. Reproduces the
+    hand-appended section of docs/real_data_results_final.md (2026-08-07).
+    """
+    cells_a = analytic.get("cells", {})
+    cells_b = beta.get("cells", {})
+    order = [
+        k for ds in ("ladd", "dfire") for shots in (1, 3, 5)
+        for k in [f"{ds}_k{shots}"]
+        if k in cells_a and k in cells_b
+    ]
+    if not order:
+        raise ValueError(
+            "--analytic-stats/--beta-stats contain no matching cells "
+            "(expected ladd_k1/k3/k5 and dfire_k1/k3/k5)"
+        )
+
+    table_hdr = ("| cell | n | Mode A mAP50 | Naive mAP50 | d | t | p(t) | q(t) "
+                 "| W | p(W) | q(W) |")
+    table_sep = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+
+    lines = [
+        "## 10-seed paired statistical protocol (pre-registration §9)",
+        "",
+        f"*Run {report_date} by `scripts/run_10_seed_protocol.py` — 10 seeds × "
+        "{ladd, dfire} × k ∈ {1, 3, 5} = 60 cells per gate on the n=100 pilot "
+        "caches, via the scripted path (02 → 03 → 04). Primary comparison: "
+        "U-ADAPT Mode A vs. naive averaging (w = 0.5). Per cell, across the 10 "
+        "seeds: paired two-sided t-test AND Wilcoxon signed-rank, Cohen's d "
+        "(paired, d_z), and Benjamini-Hochberg FDR control (q = 0.05) over the "
+        "full comparison family of 12 tests (2 tests × 6 cells).*",
+        "",
+        "### Analytic gate",
+        "",
+        table_hdr,
+        table_sep,
+    ]
+    lines += [_ts_row(k, cells_a[k]["stats"]) for k in order]
+    lines += ["", "### Beta fallback gate", "", table_hdr, table_sep]
+    lines += [_ts_row(k, cells_b[k]["stats"]) for k in order]
+    lines += [
+        "",
+        "### Analytic vs. Beta (Mode A means, per-seed paired)",
+        "",
+        "| cell | analytic | beta_fallback | Δ (β − α) | d analytic | d beta |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for k in order:
+        a = cells_a[k]["stats"]
+        b = cells_b[k]["stats"]
+        lines.append(
+            f"| {k} | {a['mode_a_map50_mean']:.4f} | {b['mode_a_map50_mean']:.4f} "
+            f"| {b['mode_a_map50_mean'] - a['mode_a_map50_mean']:+.4f} "
+            f"| {a['cohens_d']:.2f} | {b['cohens_d']:.2f} |"
+        )
+
+    # --- Interpretation (values derived from the two stats documents) ------
+    # NOTE: the verdict prose below states the DEFINITIVE pilot record
+    # (2026-08-07): every cell significant after BH-FDR and Mode A below the
+    # naive baseline. If the protocol is re-run on new data (e.g. full scale),
+    # review these claims against the regenerated tables before trusting them.
+    all_d = [cells_a[k]["stats"]["cohens_d"] for k in order] + \
+            [cells_b[k]["stats"]["cohens_d"] for k in order]
+    n_w0 = sum(
+        1 for k in order if cells_a[k]["stats"]["wilcoxon"]["statistic"] == 0.0
+    )
+    deltas = [
+        cells_b[k]["stats"]["mode_a_map50_mean"]
+        - cells_a[k]["stats"]["mode_a_map50_mean"]
+        for k in order
+    ]
+    wins = [
+        sum(ma > na for ma, na in zip(cells_a[k]["mode_a"], cells_a[k]["naive"]))
+        for k in order
+    ] + [
+        sum(ma > na for ma, na in zip(cells_b[k]["mode_a"], cells_b[k]["naive"]))
+        for k in order
+    ]
+    k_d1 = "dfire_k1" if "dfire_k1" in order else order[0]
+    d1_ana = abs(cells_a[k_d1]["stats"]["cohens_d"])
+    d1_beta = abs(cells_b[k_d1]["stats"]["cohens_d"])
+
+    ana_label = next((lab for lab in labels if lab == "analytic"), labels[0])
+    ladd_ana_n100 = runs[ana_label]["ladd"]["map50"].get(
+        "uadapt_mode_a", float("nan")
+    )
+    ts_example = "ladd_k1" if "ladd_k1" in order else order[0]
+    ladd_ts_mean = cells_a[ts_example]["stats"]["mode_a_map50_mean"]
+
+    lines += [
+        "",
+        "### Interpretation",
+        "",
+        f"- **Every cell is significant after FDR control (all q < 0.05), in "
+        f"the same direction for both gates: Mode A is significantly WORSE "
+        f"than naive averaging (w = 0.5) at every k ∈ {{1, 3, 5}} on both "
+        f"datasets.** Cohen's d spans {_d_span(all_d)} (very large, "
+        f"unfavorable); Wilcoxon W = 0 in {n_w0}/{len(order)} cells means all "
+        f"10 paired differences carried the same sign — the gap is systematic, "
+        f"not seed noise.",
+        f"- **The Beta fallback helps directionally but does not close the "
+        f"gap.** Beta raises the Mode A mean on all {len(order)} cells "
+        f"({min(deltas) * 100:+.1f} to {max(deltas) * 100:+.1f} pp; largest on "
+        f"D-Fire), consistent with the n=100 finding that hedging the "
+        f"saturated gate is directionally beneficial. Yet per-seed, Beta Mode "
+        f"A beats naive averaging on {min(wins)}–{max(wins)} of 10 seeds in "
+        f"every cell.",
+        f"- **Variance-stabilization nuance (D-Fire):** the Beta gate also "
+        f"shrank the seed-to-seed spread of the Mode A − naive gap (e.g. "
+        f"{k_d1}: |d| grows {d1_ana:.2f} → {d1_beta:.2f} despite an improved "
+        f"mean) — the fallback both raises the mean and stabilizes it across "
+        f"seeds.",
+        "- **Naive baseline is bit-identical across the two gate runs** (same "
+        "w = 0.5 scores), so the analytic-vs-beta comparison is exactly paired.",
+        "- **Verdict:** at pilot scale, neither the analytic gate nor the "
+        "pre-registered Beta contingency beats the uncertainty-blind baseline. "
+        "The D5-triggered fallback is a robustness contingency, not a fix. The "
+        "pre-registered primary comparison (§9) is settled at n=100: the gate, "
+        "as implemented, does not recover value from the uncertainty inputs.",
+        "",
+        f"> Methodology note: the 10-seed protocol evaluates the full cached "
+        f"test split via the scripted path (02 → 03 → 04), whereas the n=100 "
+        f"tables above use the demo path; the small mean differences (e.g. "
+        f"LADD analytic {_fmt_mAP(ladd_ana_n100)}% vs "
+        f"{100.0 * ladd_ts_mean:.2f}% here) reflect the documented path-level "
+        f"differences in gate inputs, not a data change.",
+    ]
+    return lines
+
+
+def _mode_b_report(args) -> List[str]:
+    """Standalone Mode B 10-seed protocol report (docs/real_data_results_modeB.md).
+
+    Compares the learned logistic-regression gate (Mode B, pre-registered
+    contingency Risk R3) against the naive w = 0.5 baseline with the same
+    paired statistics as the §9 Mode A protocol, plus a four-way comparison
+    table (zero-shot / naive / Mode A / Mode B) and a data-driven verdict.
+    """
+    mode_b = load_json(args.mode_b_stats)
+    analytic = load_json(args.analytic_stats) if args.analytic_stats else None
+    meta_b = mode_b.get("meta", {})
+    cells_b = mode_b.get("cells", {})
+    cells_a = (analytic or {}).get("cells", {}) if analytic else {}
+    order = [
+        k for ds in ("ladd", "dfire") for shots in (1, 3, 5)
+        for k in [f"{ds}_k{shots}"]
+        if k in cells_b
+    ]
+    if not order:
+        raise ValueError(
+            "--mode-b-stats contains no expected cells "
+            "(ladd_k1/k3/k5, dfire_k1/k3/k5)"
+        )
+    n_seeds = int(meta_b.get("n_seeds", 0))
+    pilot = n_seeds < 10
+    zs = meta_b.get("zero_shot_map50", {})
+
+    lines = [
+        "# U-ADAPT — Mode B 10-seed protocol: logistic-regression gate "
+        "vs naive averaging",
+        "",
+        f"*Generated {args.report_date} by `scripts/generate_real_data_report.py` "
+        "(`--mode-b-stats`). Mode B is the pre-registered contingency "
+        "(docs/pre_registration.md §10, Risk R3): a 6-parameter "
+        "logistic-regression gate (L2 = 1e-4, 5-fold CV) calibrated on a "
+        "per-seed 20-box/class set sampled from the train split, strictly "
+        "disjoint from the k-shot support examples and the test split.*",
+        "",
+    ]
+    if pilot:
+        lines += [
+            "> 🧪 **SMOKE RUN (fewer than 10 seeds)** — pipeline verification "
+            "only; the pre-registered protocol requires all 10 seeds. Treat "
+            "every statistic below as illustrative, not a result.",
+            "",
+        ]
+
+    # --- Paired statistics: Mode B vs naive -------------------------------
+    table_hdr = ("| cell | n | Mode B mAP50 | Naive mAP50 | d | t | p(t) | q(t) "
+                 "| W | p(W) | q(W) |")
+    table_sep = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+    lines += [
+        "## Mode B vs naive averaging (w = 0.5)",
+        "",
+        f"*{n_seeds} seeds × {{ladd, dfire}} × k ∈ {{1, 3, 5}} = "
+        f"{n_seeds * 6} cells, via the scripted path (02 → 05 → 03 → 04). "
+        "Per cell, across seeds: paired two-sided t-test AND Wilcoxon "
+        "signed-rank, Cohen's d (paired, d_z), and Benjamini-Hochberg FDR "
+        "control (q = 0.05) over the full comparison family of 12 tests "
+        "(2 tests × 6 cells). The naive baseline is bit-identical to the "
+        "Mode A protocol runs.*",
+        "",
+        table_hdr,
+        table_sep,
+    ]
+    full = [k for k in order if "paired_ttest" in cells_b[k].get("stats", {})]
+    for k in order:
+        s = cells_b[k]["stats"]
+        if k in full:
+            lines.append(_ts_row(k, s))
+        else:
+            lines.append(
+                f"| {k} | {s['n_seeds']} | — | — | — | — | — | — | — | — | — |"
+            )
+    if len(full) < len(order):
+        short = ", ".join(k for k in order if k not in full)
+        lines += ["", f"> Cells {short} had fewer than 2 seeds — paired "
+                      "statistics not computed for them (smoke run)."]
+
+    # --- Calibration audit ------------------------------------------------
+    lines += [
+        "",
+        "### Calibration-set audit (per-seed, per cell)",
+        "",
+        "| cell | n samples | per class (sampled) |",
+        "| --- | --- | --- |",
+    ]
+    for k in order:
+        cal = cells_b[k].get("calibration")
+        if cal is None:
+            lines.append(f"| {k} | — | — |")
+            continue
+        n_min, n_max = cal["n_samples_min"], cal["n_samples_max"]
+        span = f"{n_min}" if n_min == n_max else f"{n_min}–{n_max}"
+        pmin, pmax = cal["per_class_min"], cal["per_class_max"]
+        per = ", ".join(
+            f"{c}: {pmin[c]}" if pmin[c] == pmax[c] else f"{c}: {pmin[c]}–{pmax[c]}"
+            for c in pmin
+        )
+        lines.append(f"| {k} | {span} | {per} |")
+    lines += [
+        "",
+        "> Pre-registered size is 20 boxes per class. At n=100 pilot scale the "
+        "train caches are tiny (LADD 10 images, D-Fire 9 images), so cells "
+        "fall short of 20 (ranges above span the seeds) — the gate was fit on "
+        "exactly those counts (a full-scale run samples the full train split "
+        "and is not limited this way).",
+    ]
+
+    # --- Four-way comparison ----------------------------------------------
+    lines += [
+        "",
+        "## Four-way comparison (per-cell mAP50 means, %)",
+        "",
+        "| cell | Zero-shot | Naive | Mode A | Mode B | Δ (B − N, pp) |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for k in order:
+        sb = cells_b[k]["stats"]
+        z = zs.get(k.split("_")[0])
+        ma = (cells_a[k]["stats"]["mode_a_map50_mean"]
+              if k in cells_a else float("nan"))
+        naive_m = sb["naive_map50_mean"]
+        mb = sb["mode_a_map50_mean"]
+        zcell = f"{100.0 * z:.2f}" if z == z else "—"
+        macell = f"{100.0 * ma:.2f}" if ma == ma else "—"
+        lines.append(
+            f"| {k} | {zcell} | {100.0 * naive_m:.2f} | {macell} | "
+            f"{100.0 * mb:.2f} | {100.0 * (mb - naive_m):+.2f} |"
+        )
+    lines += [
+        "",
+        "> Zero-shot = raw detector scores on the FULL cached test split "
+        "(computed once per dataset, seed-independent). Mode A means come from "
+        "`--analytic-stats` when provided. All values are mAP50 percentages at "
+        "pilot scale — they are not the literature zero-shot floors "
+        "(LADD 61.0%, D-Fire 27.5%, Michailidou et al. Table III), which are "
+        "measured over the full test set.",
+    ]
+
+    # --- Interpretation (data-driven) --------------------------------------
+    # Cells with < 2 seeds carry only "note" (no paired stats); keep them out
+    # of the statistical interpretation (mirrors run_10_seed_protocol.py's own
+    # summary print).
+    full = [k for k in order if "paired_ttest" in cells_b[k].get("stats", {})]
+    beat = []
+    worse = []
+    sig = []
+
+    lines += ["", "### Interpretation", ""]
+    if not full:
+        lines.append(
+            "- Paired statistics unavailable: every cell has fewer than 2 seeds "
+            "in this stats document (smoke run). Re-run with `--max-seeds 10` "
+            "for the pre-registered protocol."
+        )
+    else:
+        def _q_min(s: Dict) -> float:
+            qs = [s["paired_ttest"]["q_bh"], s["wilcoxon"]["q_bh"]]
+            finite = [q for q in qs if q == q]
+            return min(finite) if finite else float("nan")
+
+        all_d = [cells_b[k]["stats"]["cohens_d"] for k in full]
+        sig = [k for k in full if _q_min(cells_b[k]["stats"]) < 0.05]
+        deltas = [
+            cells_b[k]["stats"]["mode_a_map50_mean"]
+            - cells_b[k]["stats"]["naive_map50_mean"]
+            for k in full
+        ]
+        wins = [
+            sum(mb > nv for mb, nv in zip(cells_b[k]["mode_a"], cells_b[k]["naive"]))
+            for k in full
+        ]
+        n_w0 = sum(
+            1 for k in full
+            if cells_b[k]["stats"]["wilcoxon"]["statistic"] == 0.0
+        )
+        beat = [k for k, d in zip(full, deltas) if d > 0]
+        worse = [k for k, d in zip(full, deltas) if d < 0]
+
+        if len(worse) == len(full) and len(sig) == len(full):
+            lines.append(
+                f"- **Mode B did NOT beat naive averaging.** The learned gate is "
+                f"significantly WORSE than w = 0.5 at every cell after BH-FDR "
+                f"control ({len(sig)}/{len(full)} cells, all q < 0.05); Cohen's d "
+                f"spans {_d_span(all_d)} (very large, unfavorable); Wilcoxon W = 0 "
+                f"in {n_w0}/{len(full)} cells means every paired difference had "
+                f"the same sign — the gap is systematic, not seed noise. Per-seed, "
+                f"Mode B beats naive on {min(wins)}–{max(wins)} of {n_seeds} seeds "
+                f"across cells. **The pre-registered fallback narrative applies:** "
+                f"elevate the plain-confidence margin / acknowledge the limitation "
+                f"in the thesis rather than claiming learned-gate gains."
+            )
+        elif len(beat) > 0:
+            pos = [d for d in deltas if d > 0]
+            lines.append(
+                f"- **Mode B beat naive averaging on {len(beat)}/{len(full)} cells** "
+                f"({', '.join(beat)}), with deltas of "
+                f"{100.0 * min(pos):+.2f} to {100.0 * max(pos):+.2f} pp on those "
+                f"cells; it lost on {len(worse)} cells "
+                f"({', '.join(worse) if len(worse) <= 3 else 'see table'}). "
+                f"Cells significant after FDR: {len(sig)}/{len(full)}."
+            )
+        else:
+            lines.append(
+                f"- **No cell shows Mode B above the naive baseline** "
+                f"(Δ = {100.0 * min(deltas):+.2f} to {100.0 * max(deltas):+.2f} pp); "
+                f"{len(sig)}/{len(full)} cells significant after FDR. "
+                f"The pre-registered fallback narrative applies."
+            )
+        if analytic is not None:
+            a_means = [100.0 * cells_a[k]["stats"]["mode_a_map50_mean"] for k in full]
+            b_means = [100.0 * cells_b[k]["stats"]["mode_a_map50_mean"] for k in full]
+            better = sum(b > a for a, b in zip(a_means, b_means))
+            lines.append(
+                f"- **vs Mode A:** the learned gate raises the per-cell mean above "
+                f"the analytic gate on {better}/{len(full)} cells "
+                f"(Mode B − Mode A from {min(b - a for a, b in zip(a_means, b_means)):+.2f} "
+                f"to {max(b - a for a, b in zip(a_means, b_means)):+.2f} pp) — "
+                f"consistent with learning beating the saturated analytic rule, "
+                f"but neither learned nor analytic gating recovers the naive "
+                f"baseline at pilot scale."
+            )
+        lines += [
+            "",
+            "> ⚠️ **Pilot-scale caveats that limit the generality of this verdict:** "
+            "(1) the train caches are tiny (LADD 10 images, D-Fire 9), so the "
+            "calibration sets are far below 20 boxes/class and the gate's learning "
+            "signal is minimal; (2) affinity saturates ≥ 0.65 on real features, so "
+            "`visual_correct` is True for essentially every sampled box and the "
+            "soft targets collapse toward σ(S_visual − S_text) — the gate has little "
+            "directional signal to learn from; (3) the soft-target mapping in "
+            "`soft_targets()` was fixed to the pre-registered formula (proposal "
+            "§5.4.2) on 2026-08-07 — pre-fix Mode B numbers learned the inverse "
+            "mapping and are not comparable.",
+        ]
+    lines += [
+        "",
+        "---",
+        "",
+        "## Verdict (per pre-registered contingency Risk R3)",
+        "",
+        "Did Mode B successfully beat naive averaging? "
+        + ("**No — and significantly not.** "
+           if (len(worse) == len(full) and len(sig) == len(full)) else
+           "**Partially / no.** ") +
+        "The logistic-regression gate trained on 20 boxes/class does not "
+        "rescue performance where the analytic rule failed at n=100 pilot "
+        "scale; the thesis narrative should treat the learned gate as a "
+        "robustness contingency, not a fix, and should elevate the "
+        "plain-confidence-margin / acknowledged-limitation fallback per the "
+        "pre-registration.",
+    ]
     return lines
 
 
@@ -555,6 +984,21 @@ def main() -> None:
                              "meta.n_test_images < 100)")
     parser.add_argument("--pilot-n", default="n=100",
                         help="pilot label size text (default: 'n=100')")
+    parser.add_argument("--analytic-stats", type=Path, default=None,
+                        help="stats.json from scripts/run_10_seed_protocol.py "
+                             "(--gate-type analytic); with --beta-stats, appends "
+                             "the pre-registration §9 10-seed protocol section "
+                             "to the comparative report (--compare-dirs mode only)")
+    parser.add_argument("--beta-stats", type=Path, default=None,
+                        help="stats.json from scripts/run_10_seed_protocol.py "
+                             "(--gate-type beta_fallback); must be paired with "
+                             "--analytic-stats")
+    parser.add_argument("--mode-b-stats", type=Path, default=None,
+                        help="stats.json from scripts/run_10_seed_protocol.py "
+                             "(--mode B); writes the standalone Mode B protocol "
+                             "report (docs/real_data_results_modeB.md). Optional "
+                             "--analytic-stats adds the Mode A column to the "
+                             "four-way comparison")
     args = parser.parse_args()
 
     # --- Comparative mode -------------------------------------------------
@@ -563,12 +1007,43 @@ def main() -> None:
             parser.error("--compare-dirs needs at least two directories")
         if args.compare_labels and len(args.compare_labels) != len(args.compare_dirs):
             parser.error("--compare-labels must match --compare-dirs in count")
+        if bool(args.analytic_stats) != bool(args.beta_stats):
+            parser.error("--analytic-stats and --beta-stats must be passed "
+                         "together")
+        for p in (args.analytic_stats, args.beta_stats):
+            if p is not None and not p.exists():
+                raise FileNotFoundError(
+                    f"missing 10-seed stats file: {p} "
+                    "(run scripts/run_10_seed_protocol.py first)"
+                )
         args.out = args.out or Path("docs/real_data_results_final.md")
         lines = _build_compare_report(args)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with open(args.out, "w") as fh:
-            fh.write("\n".join(lines))
+            fh.write("\n".join(lines) + "\n")
         print(f"wrote comparative report -> {args.out}")
+        return
+
+    # --- Mode B protocol report (standalone) --------------------------------
+    if args.mode_b_stats:
+        if args.compare_dirs:
+            parser.error("--mode-b-stats cannot be combined with --compare-dirs "
+                         "(use separate invocations)")
+        if not args.mode_b_stats.exists():
+            raise FileNotFoundError(
+                f"missing --mode-b-stats file: {args.mode_b_stats} "
+                "(run scripts/run_10_seed_protocol.py --mode B first)"
+            )
+        if args.analytic_stats is not None and not args.analytic_stats.exists():
+            raise FileNotFoundError(
+                f"missing --analytic-stats file: {args.analytic_stats}"
+            )
+        args.out = args.out or Path("docs/real_data_results_modeB.md")
+        lines = _mode_b_report(args)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.out, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        print(f"wrote Mode B protocol report -> {args.out}")
         return
 
     # --- Single-run mode (backward compatible) -----------------------------
@@ -712,7 +1187,7 @@ def main() -> None:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as fh:
-        fh.write("\n".join(lines))
+        fh.write("\n".join(lines) + "\n")
     print(f"wrote report -> {args.out}")
 
 

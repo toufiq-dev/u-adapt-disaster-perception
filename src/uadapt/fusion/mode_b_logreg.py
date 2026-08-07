@@ -15,9 +15,18 @@ Soft targets (per proposal Section 5.4.2):
          0                                    if text top-1 correct & visual not
          sigma(S_visual - S_text)             if both or neither are correct
 
-The gate is trained with binary cross-entropy against these soft targets via
-plain gradient descent in numpy (no sklearn/torch required). L2 weight decay
-1e-4 is applied; 5-fold CV on the calibration set reports mean + std.
+``w`` is the weight on the VISUAL score, so w* = 1 means "trust visual" and
+w* = 0 means "trust text". The gate is trained with binary cross-entropy
+against these soft targets via plain gradient descent in numpy (no
+sklearn/torch required). L2 weight decay 1e-4 is applied; 5-fold CV on the
+calibration set reports mean + std.
+
+NOTE (2026-08-07): ``soft_targets`` previously had the two disagreement
+branches SWAPPED (``w* = 1`` for text-only-correct), contradicting the
+pre-registered formula; fixed to match proposal §5.4.2 and
+``tests/test_mode_b_calibration.py``. Runs produced before this fix learned
+the inverse directional mapping and should not be compared with post-fix
+Mode B numbers.
 
 With 6 parameters and ~20 boxes/class the parameter-to-sample ratio is ~0.3,
 keeping overfitting risk low (pre-registered overfitting mitigation).
@@ -53,8 +62,12 @@ def soft_targets(
     t = np.zeros_like(np.asarray(s_text, dtype=np.float64))
     both = text_correct & visual_correct
     neither = ~text_correct & ~visual_correct
-    t[text_correct & ~visual_correct] = 1.0
-    t[visual_correct & ~text_correct] = 0.0
+    # Pre-registered formula (proposal §5.4.2): w* = 1 (trust visual) when
+    # the VISUAL modality alone is correct; w* = 0 (trust text) when TEXT
+    # alone is correct. Fixed 2026-08-07 — the two branches were previously
+    # swapped (see module docstring).
+    t[visual_correct & ~text_correct] = 1.0
+    t[text_correct & ~visual_correct] = 0.0
     t[both | neither] = _sigmoid(
         np.asarray(s_visual, dtype=np.float64)[both | neither]
         - np.asarray(s_text, dtype=np.float64)[both | neither]
@@ -123,7 +136,13 @@ class LogRegGate:
     def fit_cv(
         self, X: np.ndarray, y_soft: np.ndarray
     ) -> "LogRegGate":
-        """5-fold CV on the calibration set; stores per-fold scores."""
+        """5-fold CV on the calibration set; stores per-fold scores.
+
+        Folds with an empty train or test partition are skipped (the
+        pre-registered 5-fold design assumes >= 5 samples; on tiny pilot
+        calibration sets, e.g. the n=100 pilot's 1-6 boxes, fewer folds are
+        actually evaluated and ``cv_scores`` is None when none qualify).
+        """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y_soft, dtype=np.float64)
         n = len(X)
@@ -133,17 +152,25 @@ class LogRegGate:
         for fold in range(self.n_folds):
             test_idx = np.arange(fold, n, self.n_folds)
             train_idx = np.setdiff1d(np.arange(n), test_idx)
+            if len(train_idx) == 0 or len(test_idx) == 0:
+                continue
             gate = LogRegGate(
                 l2=self.l2, epochs=self.epochs, lr=self.lr, n_folds=self.n_folds
             ).fit(X[train_idx], y[train_idx])
             pred = gate.predict(X[test_idx])
             scores.append(float(np.mean((pred - y[test_idx]) ** 2)))
-        self._cv_scores = np.asarray(scores)
-        logger.info(
-            "LogReg 5-fold MSE: mean %.4f std %.4f",
-            float(np.mean(scores)),
-            float(np.std(scores)),
-        )
+        self._cv_scores = np.asarray(scores) if scores else None
+        if scores:
+            logger.info(
+                "LogReg %d-fold MSE (of %d): mean %.4f std %.4f",
+                len(scores), self.n_folds,
+                float(np.mean(scores)), float(np.std(scores)),
+            )
+        else:
+            logger.info(
+                "LogReg %d-fold CV skipped: calibration set has only %d sample(s)",
+                self.n_folds, n,
+            )
         return self.fit(X, y)
 
     # ------------------------------------------------------------------

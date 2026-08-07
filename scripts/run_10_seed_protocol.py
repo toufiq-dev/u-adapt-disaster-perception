@@ -37,6 +37,15 @@ Usage:
         --work-dir outputs/real_data/ten_seed_protocol \
         --out outputs/real_data/ten_seed_protocol/stats.json
 
+    # Mode B (pre-registered contingency, Risk R3): the SAME per-cell loop
+    # with the learned logistic-regression gate (20-box/class calibration,
+    # per-seed, disjoint from support + test) as the primary method.
+    python scripts/run_10_seed_protocol.py \
+        --datasets ladd dfire --shots 1 3 5 --max-seeds 10 \
+        --mode B \
+        --work-dir outputs/real_data/ten_seed_protocol_modeB \
+        --out outputs/real_data/ten_seed_protocol_modeB/stats.json
+
     # Smoke test (2 seeds, one dataset, k=5)
     python scripts/run_10_seed_protocol.py \
         --datasets ladd --shots 5 --max-seeds 2 \
@@ -91,14 +100,26 @@ def _run_cell(
     ds: str,
     seed: int,
     shots: int,
+    mode: str,
     gate_type: str,
     cache_root: Path,
     annotations_dir: Path,
     mode_config: Path,
+    mode_config_b: Path,
+    boxes_per_class: int,
     work: Path,
-) -> None:
-    """One (dataset, seed, shots) cell: prototypes -> Mode A + naive scores
-    -> evaluation of both. Writes intermediates under ``work``."""
+) -> Dict:
+    """One (dataset, seed, shots) cell: prototypes -> primary + naive scores
+    -> evaluation of both. Writes intermediates under ``work``.
+
+    For ``mode == "B"`` the primary scores come from the learned
+    logistic-regression gate (``03_run_fusion.py --mode B``) calibrated on a
+    per-seed 20-box/class set built by ``build_calibration_set.py`` (disjoint
+    from the cell's k-shot support and the test split); for
+    ``mode == "A"`` from the analytic/Beta gate (``--gate-type``). The naive
+    w = 0.5 baseline is identical in both modes. Returns cell-level extras
+    (Mode B calibration counts) for the stats document.
+    """
     proto = work / "prototypes" / f"{ds}_k{shots}_seed{seed}.json"
     scores_a = work / "scores" / f"{ds}_k{shots}_seed{seed}.json"
     scores_naive = work / "scores_naive" / f"{ds}_k{shots}_seed{seed}.json"
@@ -119,17 +140,56 @@ def _run_cell(
         "--seed", str(seed),
         "--out", str(proto),
     ])
-    for gate, out in (("A", scores_a), ("naive", scores_naive)):
-        gtype = gate_type if gate == "A" else "naive"
+
+    extras: Dict = {}
+    if mode == "B":
+        # Per-seed 20-box/class calibration set, disjoint from the support
+        # of THIS cell (and by construction from the test split).
+        cal = work / "calibration" / f"{ds}_k{shots}_seed{seed}.json"
+        _run([
+            py, str(_ROOT / "scripts" / "build_calibration_set.py"),
+            "--cache-dir", str(cache_root / ds),
+            "--ground-truth", str(annotations_dir / f"{ds}_train.json"),
+            "--prototypes", str(proto),
+            "--boxes-per-class", str(boxes_per_class),
+            "--seed", str(seed),
+            "--out", str(cal),
+        ])
+        with open(cal) as fh:
+            cal_payload = json.load(fh)
+        extras["calibration"] = {
+            "n_samples": len(cal_payload["samples"]),
+            "per_class": cal_payload["sampling"]["per_class_sampled"],
+            "eligible": cal_payload["sampling"]["per_class_eligible"],
+        }
+        _run([
+            py, str(_ROOT / "scripts" / "03_run_fusion.py"),
+            "--mode", "B",
+            "--cache-dir", str(cache_root / ds),
+            "--prototypes", str(proto),
+            "--mode-config", str(mode_config_b),
+            "--calibration", str(cal),
+            "--out", str(scores_a),
+        ])
+    else:
         _run([
             py, str(_ROOT / "scripts" / "03_run_fusion.py"),
             "--mode", "A",
             "--cache-dir", str(cache_root / ds),
             "--prototypes", str(proto),
             "--mode-config", str(mode_config),
-            "--gate-type", gtype,
-            "--out", str(out),
+            "--gate-type", gate_type,
+            "--out", str(scores_a),
         ])
+    _run([
+        py, str(_ROOT / "scripts" / "03_run_fusion.py"),
+        "--mode", "A",
+        "--cache-dir", str(cache_root / ds),
+        "--prototypes", str(proto),
+        "--mode-config", str(mode_config),
+        "--gate-type", "naive",
+        "--out", str(scores_naive),
+    ])
     for preds, out in ((scores_a, eval_a), (scores_naive, eval_naive)):
         _run([
             py, str(_ROOT / "scripts" / "04_evaluate.py"),
@@ -137,6 +197,47 @@ def _run_cell(
             "--ground-truth", str(gt),
             "--out", str(out),
         ])
+    return extras
+
+
+def _zero_shot_map50(
+    py: str,
+    ds: str,
+    cache_root: Path,
+    annotations_dir: Path,
+    work: Path,
+) -> float:
+    """Zero-shot mAP50 on the FULL cached test split (raw detector scores).
+
+    Seed-independent, so it is computed once per dataset (used by the Mode B
+    report's four-way comparison). The predictions file simply passes the
+    cached raw ``record.score`` through, then 04_evaluate.py scores them.
+    """
+    from uadapt.features.cache_engine import load_cache
+
+    records = load_cache(cache_root / ds, split="test")
+    preds = [
+        {
+            "image_id": r.image_id,
+            "class": r.class_name,
+            "score": float(r.score),
+            "bbox": r.bbox.tolist(),
+        }
+        for r in records
+    ]
+    scores = work / "scores_zeroshot" / f"{ds}.json"
+    eval_path = work / "eval_zeroshot" / f"{ds}.json"
+    for d in (scores.parent, eval_path.parent):
+        d.mkdir(parents=True, exist_ok=True)
+    with open(scores, "w") as fh:
+        json.dump(preds, fh)
+    _run([
+        py, str(_ROOT / "scripts" / "04_evaluate.py"),
+        "--predictions", str(scores),
+        "--ground-truth", str(annotations_dir / f"{ds}_test.json"),
+        "--out", str(eval_path),
+    ])
+    return _map50_of(eval_path)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +313,20 @@ def main() -> None:
     parser.add_argument("--gate-type", choices=["analytic", "beta_fallback"],
                         default="analytic",
                         help="Mode A gate variant to run against the naive "
-                             "w = 0.5 baseline (pre-registered primary: analytic)")
+                             "w = 0.5 baseline (pre-registered primary: analytic; "
+                             "ignored when --mode B)")
+    parser.add_argument("--mode", choices=["A", "B"], default="A",
+                        help="primary method under test: A = analytic/beta gate "
+                             "(pre-registered primary), B = learned logreg gate "
+                             "with per-seed 20-box/class calibration "
+                             "(pre-registered contingency, Risk R3)")
+    parser.add_argument("--mode-config-b",
+                        default="configs/modes/mode_B_logreg.yaml", type=Path,
+                        help="Mode B config (pre-registered 6-param logistic "
+                             "regression gate; default: mode_B_logreg.yaml)")
+    parser.add_argument("--boxes-per-class", type=int, default=20,
+                        help="Mode B calibration size per class "
+                             "(pre-registered: 20; default: 20)")
     parser.add_argument("--cache-root", default="cached_features", type=Path)
     parser.add_argument("--annotations-dir", default="data/annotations", type=Path)
     parser.add_argument("--mode-config",
@@ -232,11 +346,13 @@ def main() -> None:
     work = args.work_dir
     work.mkdir(parents=True, exist_ok=True)
     seeds = list(range(args.seed0, args.seed0 + args.max_seeds))
+    label = (f"gate={args.gate_type}" if args.mode == "A"
+             else f"mode B, calibration 20-box/class per-seed")
     logger.info(
         "10-seed protocol scaffold: %d seed(s) x %d dataset(s) x %d shot(s) "
-        "= %d cells (gate=%s)",
+        "= %d cells (%s)",
         len(seeds), len(args.datasets), len(args.shots),
-        len(seeds) * len(args.datasets) * len(args.shots), args.gate_type,
+        len(seeds) * len(args.datasets) * len(args.shots), label,
     )
 
     cells: Dict[str, Dict] = {}
@@ -244,20 +360,57 @@ def main() -> None:
     for ds in args.datasets:
         for shots in args.shots:
             cells[_cell_key(ds, shots)] = {"mode_a": [], "naive": []}
+    zero_shot_map50: Dict[str, float] = {}
+    if args.mode == "B":
+        # Zero-shot floor (seed-independent): raw detector scores on the full
+        # cached test split, once per dataset. Used by the Mode B report.
+        for ds in args.datasets:
+            zero_shot_map50[ds] = _zero_shot_map50(
+                args.py, ds, args.cache_root, args.annotations_dir, work
+            )
+            logger.info("%s zero-shot mAP50 (raw, test cache) = %.4f",
+                        ds, zero_shot_map50[ds])
+
+    cal_by_cell: Dict[str, List[Dict]] = {}
     for ds in args.datasets:
         for seed in seeds:
             for shots in args.shots:
                 n_cells += 1
                 logger.info("[%d] %s seed=%d shots=%d ...", n_cells, ds, seed, shots)
-                _run_cell(args.py, ds, seed, shots, args.gate_type,
-                          args.cache_root, args.annotations_dir,
-                          args.mode_config, work)
-                cells[_cell_key(ds, shots)]["mode_a"].append(
+                extras = _run_cell(args.py, ds, seed, shots, args.mode,
+                                   args.gate_type, args.cache_root,
+                                   args.annotations_dir, args.mode_config,
+                                   args.mode_config_b, args.boxes_per_class,
+                                   work)
+                key = _cell_key(ds, shots)
+                cells[key]["mode_a"].append(
                     _map50_of(work / "eval" / f"{ds}_k{shots}_seed{seed}.json")
                 )
-                cells[_cell_key(ds, shots)]["naive"].append(
+                cells[key]["naive"].append(
                     _map50_of(work / "eval_naive" / f"{ds}_k{shots}_seed{seed}.json")
                 )
+                if args.mode == "B" and extras.get("calibration"):
+                    cal_by_cell.setdefault(key, []).append(extras["calibration"])
+
+    if args.mode == "B":
+        # Calibration is per-seed; aggregate the min/max range across seeds so
+        # the stats document reports the TRUE per-cell sampling span.
+        for key, cals in cal_by_cell.items():
+            n = [c["n_samples"] for c in cals]
+            classes = sorted({cls for c in cals for cls in c["per_class"]})
+            cells[key]["calibration"] = {
+                "n_seeds_reported": len(cals),
+                "n_samples_min": int(min(n)),
+                "n_samples_max": int(max(n)),
+                "per_class_min": {
+                    cls: int(min(c["per_class"].get(cls, 0) for c in cals))
+                    for cls in classes
+                },
+                "per_class_max": {
+                    cls: int(max(c["per_class"].get(cls, 0) for c in cals))
+                    for cls in classes
+                },
+            }
 
     # Per-cell paired statistics.
     p_pool: List[float] = []
@@ -275,12 +428,19 @@ def main() -> None:
     q_pool = _bh_fdr(p_pool)
     q_iter = iter(q_pool)
     for key in order:
+        stats = cells[key].get("stats", {})
         for fam in ("paired_ttest", "wilcoxon"):
-            cells[key]["stats"][fam]["q_bh"] = next(q_iter)
+            # Cells with < 2 seeds carry only a "note" (no paired stats);
+            # consume the placeholder q-value to keep iterator alignment.
+            if fam in stats:
+                stats[fam]["q_bh"] = next(q_iter)
+            else:
+                next(q_iter)
 
     # Summary table.
+    primary = "Mode B (logreg, 20-box/class calibration)" if args.mode == "B" else "Mode A"
     print("\n" + "=" * 100)
-    print(f"10-seed protocol (gate={args.gate_type}) — Mode A vs naive averaging (w=0.5)")
+    print(f"10-seed protocol (mode={args.mode}) — {primary} vs naive averaging (w=0.5)")
     print("=" * 100)
     print(f"{'cell':<12}{'n':>3}{'ModeA mean':>11}{'Naive mean':>11}"
           f" {'d':>7} {'t':>8} {'p(t)':>9} {'q(t)':>8} {'W':>7} {'p(W)':>9} {'q(W)':>8}")
@@ -308,23 +468,37 @@ def main() -> None:
     print("NOTE: smoke runs (< 10 seeds) are for pipeline verification only — "
           "the pre-registered protocol needs all 10 seeds.")
 
-    out = {
-        "meta": {
-            "protocol": "pre-registration §9 — 10-seed paired test, "
-                        "Mode A vs naive averaging (w = 0.5)",
-            "gate_type": args.gate_type,
-            "datasets": args.datasets,
-            "shots": args.shots,
-            "seed0": args.seed0,
-            "n_seeds": len(seeds),
-            "created_utc": datetime.now(timezone.utc).isoformat(),
-            "fdr": "Benjamini-Hochberg, q = 0.05",
-            "pipeline": ["02_build_prototypes.py", "03_run_fusion.py",
-                         "04_evaluate.py"],
-            "work_dir": str(work),
-        },
-        "cells": cells,
+    meta: Dict = {
+        "protocol": "pre-registration §9 — 10-seed paired test, "
+                    "{primary} vs naive averaging (w = 0.5)".format(
+                        primary=primary),
+        "mode": args.mode,
+        "datasets": args.datasets,
+        "shots": args.shots,
+        "seed0": args.seed0,
+        "n_seeds": len(seeds),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "fdr": "Benjamini-Hochberg, q = 0.05",
+        "pipeline": (["02_build_prototypes.py", "build_calibration_set.py",
+                       "03_run_fusion.py", "04_evaluate.py"]
+                      if args.mode == "B" else
+                      ["02_build_prototypes.py", "03_run_fusion.py",
+                       "04_evaluate.py"]),
+        "work_dir": str(work),
     }
+    if args.mode == "A":
+        meta["gate_type"] = args.gate_type
+    else:
+        meta["mode_config"] = str(args.mode_config_b)
+        meta["calibration"] = {
+            "boxes_per_class": args.boxes_per_class,
+            "source": "train split cache",
+            "disjoint_from_support": True,
+            "disjoint_from_test": True,
+            "per_seed": True,
+        }
+        meta["zero_shot_map50"] = zero_shot_map50
+    out = {"meta": meta, "cells": cells}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as fh:
         json.dump(out, fh, indent=2)
