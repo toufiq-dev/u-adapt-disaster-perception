@@ -98,6 +98,8 @@ u-adapt-disaster-perception/
 - [`docs/datasets.md`](docs/datasets.md) — dataset details and mask-to-box rules.
 - [`docs/licenses.md`](docs/licenses.md) — model and dataset licenses.
 - [`docs/supervisor_demo_report.md`](docs/supervisor_demo_report.md) — 2-page supervisor demo summary (Mode A).
+- [`docs/colab_full_scale_guide.md`](docs/colab_full_scale_guide.md) — full-scale Colab runbook: download the complete LADD/D-Fire raw data, run the RAM-safe resume-safe feature extraction on a free T4 (multiple sessions), then the Mode B 10-seed protocol on the full caches.
+- [`docs/colab_mode_b_guide.md`](docs/colab_mode_b_guide.md) — Colab runbook for the Mode B 10-seed protocol on the existing n=100 pilot caches (fast, cache-only).
 
 ## Setup Instructions
 

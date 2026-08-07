@@ -301,6 +301,26 @@ def _cell_key(ds: str, shots: int) -> str:
     return f"{ds}_k{shots}"
 
 
+def _test_image_counts(cache_root: Path, datasets: List[str]) -> Dict[str, int]:
+    """Distinct image ids in each dataset's cached test split.
+
+    The scripted path evaluates the FULL cached test split, so the meta's
+    ``n_test_images`` is simply the number of distinct image ids in the test
+    cache (not any ``--n-test-images`` subset).
+    """
+    from uadapt.features.cache_engine import load_cache
+
+    out: Dict[str, int] = {}
+    for ds in datasets:
+        try:
+            recs = load_cache(cache_root / ds, split="test")
+        except FileNotFoundError:
+            out[ds] = 0
+            continue
+        out[ds] = len({r.image_id for r in recs})
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Pre-registered 10-seed paired statistical protocol "
@@ -477,6 +497,10 @@ def main() -> None:
         "shots": args.shots,
         "seed0": args.seed0,
         "n_seeds": len(seeds),
+        # Test-split size actually evaluated (distinct image ids in the test
+        # cache), so reports can distinguish the n=100 pilot from full-scale
+        # runs (2026-08-07: full-scale LADD 1,365 / D-Fire 21,527).
+        "n_test_images": _test_image_counts(args.cache_root, args.datasets),
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "fdr": "Benjamini-Hochberg, q = 0.05",
         "pipeline": (["02_build_prototypes.py", "build_calibration_set.py",

@@ -27,7 +27,11 @@
 #   TOP_K             proposal limit              (default: 100; 300 only as ablation)
 #   SHOTS             support examples k          (default: 5)
 #   SEED              RNG seed                    (default: 0)
-#   N_TEST_IMAGES     test subset size            (default: 100000 = all images)
+#   N_TEST_IMAGES     test subset size            (default: 100000 = all images;
+#                                                    the n=100 pilot passed
+#                                                    N_TEST_IMAGES=100 explicitly —
+#                                                    the full-scale run leaves it
+#                                                    unset)
 #   LADD_GT / DFIRE_GT  COCO annotation JSONs     (default: data/annotations/{ladd,dfire}_test.json)
 #   LADD_NORM / DFIRE_NORM  normalization strategy (default: min-max / absolute)
 #   GATE_TYPE         Mode A gate                  (default: analytic; also via --gate-type)
@@ -37,7 +41,9 @@
 # For the pre-registered Analytic-vs-Beta comparison (2026-08-07) run the
 # pipeline TWICE with different --gate-type and OUT_ROOT/REPORT_OUT, then
 # scripts/generate_real_data_report.py --compare-dirs ... writes the
-# side-by-side report (docs/real_data_results_final.md):
+# side-by-side report (docs/real_data_results_final.md). The examples below
+# show the n=100 pilot (N_TEST_IMAGES=100); the FULL-SCALE run omits
+# N_TEST_IMAGES entirely (default 100000 = all test images):
 #   PYTHON=.venv/bin/python N_TEST_IMAGES=100 \\
 #     OUT_ROOT=outputs/real_data/n100_analytic \\
 #     REPORT_OUT=outputs/real_data/n100_analytic/report.md \\
@@ -169,6 +175,11 @@ for ds in ladd dfire; do
             continue
         fi
         echo "  extracting $ds/$split -> $CACHE_ROOT/$ds ..."
+        # NOTE: extraction is RESUME-SAFE (cache_engine.py 2026-08-07): a
+        # disconnected run leaves records.json behind and a re-run continues
+        # from there instead of restarting at image 0. This is what makes the
+        # full-scale Colab extraction (LADD 1,365 / D-Fire 21,527 images)
+        # feasible across Colab's session limits.
         "$PY" scripts/01_extract_and_cache.py \
             --model-config "$MODEL_CONFIG" \
             --dataset-config "configs/datasets/$ds.yaml" \

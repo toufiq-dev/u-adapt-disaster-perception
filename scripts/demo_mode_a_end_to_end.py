@@ -189,7 +189,10 @@ def main() -> None:
     parser.add_argument("--ground-truth", type=Path, help="COCO annotations JSON (real mode)")
     parser.add_argument("--shots", type=int, default=5, help="k support examples (1/3/5)")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--n-test-images", type=int, default=80, help="subset size (50-100)")
+    parser.add_argument("--n-test-images", type=int, default=80, help="subset "
+                        "size (pass a value >= the full split's image count, "
+                        "e.g. 100000, to evaluate ALL test images — the "
+                        "full-scale default; the n=100 pilot used 100)")
     parser.add_argument("--classes", nargs="*", default=None, help="override class list")
     parser.add_argument("--norm-strategy", choices=["min-max", "absolute"],
                         default="min-max",

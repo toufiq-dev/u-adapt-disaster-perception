@@ -79,3 +79,32 @@ def test_extract_and_cache_streaming_resume(tmp_path):
     engine.extract_and_cache(pairs_all(), ["a"], split="test")
     recs = load_cache(tmp_path, split="test")
     assert len(recs) == 4
+
+
+def test_extract_and_cache_resume_from_partial_state_without_manifest(tmp_path):
+    """A disconnected run leaves records.json but NO manifest.json; a re-run
+    must continue from that partial state instead of restarting from image 0
+    (2026-08-07: full-scale Colab extraction can exceed one session)."""
+    engine = FeatureCacheEngine(_StubBackbone(), cache_dir=tmp_path, top_k=10)
+
+    def pairs_all():
+        for i in range(5):
+            yield np.zeros((4, 4, 3), dtype=np.uint8), f"p{i}"
+
+    # Simulate a crash mid-split: process 2 images, then remove the manifest
+    # (the engine only writes it on completion).
+    import json
+
+    engine.extract_and_cache(pairs_all(), ["a"], split="test")
+    manifest = tmp_path / "test" / "manifest.json"
+    assert manifest.exists()
+    # Recreate the crash condition: manifest gone, records.json still there.
+    manifest.unlink()
+    assert (tmp_path / "test" / "records.json").exists()
+
+    # Re-run with resume: all 5 images cached, none duplicated.
+    engine.extract_and_cache(pairs_all(), ["a"], split="test")
+    recs = load_cache(tmp_path, split="test")
+    assert len(recs) == 5
+    assert {r.image_id for r in recs} == {f"p{i}" for i in range(5)}
+    assert manifest.exists()  # completed split rewrites the manifest

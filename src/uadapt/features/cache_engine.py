@@ -133,7 +133,12 @@ class FeatureCacheEngine:
         manifest_path = split_dir / "manifest.json"
 
         records: Dict[str, List[FeatureRecord]] = {}
-        if resume and manifest_path.exists():
+        # Resume from ANY prior partial state. ``manifest.json`` is written
+        # only at the END of a completed split, so a disconnected run leaves
+        # only ``records.json`` (+ ``features.npz``) behind — resuming must
+        # accept that partial state or a multi-hour full-scale extraction
+        # restarts from image 0 after every Colab disconnect (2026-08-07).
+        if resume and (manifest_path.exists() or (split_dir / "records.json").exists()):
             records = _load_manifest_records(manifest_path)
             logger.info("resuming split %s with %d images cached", split, len(records))
 

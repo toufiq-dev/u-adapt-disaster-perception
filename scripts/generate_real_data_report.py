@@ -303,12 +303,22 @@ def _ds_key(ds: str) -> str:
     return "dfire" if ds == "D-Fire" else ds.lower()
 
 
-def _compare_mAP50_section(dataset: str, runs: Dict[str, Dict]) -> List[str]:
+def _n_label(dsk: str, n_by_ds: Dict[str, int], pilot: bool) -> str:
+    """Per-dataset size label: 'n=100 subset' (pilot) or 'full test split
+    (n=1365)' (full-scale, 2026-08-07)."""
+    n = n_by_ds.get(dsk)
+    if n is None:
+        return "full test split"
+    return f"n={n} subset" if (pilot and n <= 100) else f"full test split (n={n})"
+
+
+def _compare_mAP50_section(dataset: str, runs: Dict[str, Dict],
+                           n_by_ds: Dict[str, int], pilot: bool) -> List[str]:
     """Side-by-side mAP50 table: rows = methods, columns = gate labels."""
     labels = list(runs.keys())
     dsk = _ds_key(dataset)
     lines = [
-        f"### {dataset} — mAP50 (n=100 subset, side-by-side)",
+        f"### {dataset} — mAP50 ({_n_label(dsk, n_by_ds, pilot)}, side-by-side)",
         "",
         "| Method | " + " | ".join(labels) + " | Δ (β − α) |",
         "| --- | " + " | ".join(["---"] * len(labels)) + " | --- |",
@@ -356,10 +366,10 @@ def _compare_gate_section(runs: Dict[str, Dict]) -> List[str]:
     lines += [
         "",
         "> The analytic gate's mean weight saturates toward the visual "
-        "modality (LADD 0.699, D-Fire 0.856 at n=100). The Beta fallback "
-        "hedges the commitment where variances cluster at the extremes "
-        "(D5 contingency): D-Fire mean w drops 0.856 -> 0.775, LADD "
-        "0.699 -> 0.686 — still > 0.55 for essentially every proposal.",
+        "modality (LADD 0.699, D-Fire 0.856 on the pilot caches). The Beta "
+        "fallback hedges the commitment where variances cluster at the "
+        "extremes (D5 contingency): D-Fire mean w drops 0.856 -> 0.775, "
+        "LADD 0.699 -> 0.686 — still > 0.55 for essentially every proposal.",
     ]
     return lines
 
@@ -427,7 +437,8 @@ def _compare_diag_section(runs: Dict[str, Dict]) -> List[str]:
     return lines
 
 
-def _compare_exec_summary(runs: Dict[str, Dict]) -> List[str]:
+def _compare_exec_summary(runs: Dict[str, Dict], n_by_ds: Dict[str, int],
+                          pilot: bool) -> List[str]:
     """One-line per-dataset executive summary with gate deltas."""
     labels = list(runs.keys())
     a, b = labels[0], labels[-1]
@@ -440,15 +451,15 @@ def _compare_exec_summary(runs: Dict[str, Dict]) -> List[str]:
         naive = ma.get("naive_average")
         zs = ma.get("zero_shot_raw")
         lines.append(
-            f"- **{ds}** (n=100): Mode A {a} **{_fmt_mAP(ua_a)}%** vs "
-            f"{b} **{_fmt_mAP(ua_b)}%** ({_pct_pp(ua_b - ua_a)}); "
-            f"naive averaging **{_fmt_mAP(naive)}%**, zero-shot "
-            f"**{_fmt_mAP(zs)}%**."
+            f"- **{ds}** ({_n_label(dsk, n_by_ds, pilot)}): Mode A {a} "
+            f"**{_fmt_mAP(ua_a)}%** vs {b} **{_fmt_mAP(ua_b)}%** "
+            f"({_pct_pp(ua_b - ua_a)}); naive averaging "
+            f"**{_fmt_mAP(naive)}%**, zero-shot **{_fmt_mAP(zs)}%**."
         )
         worse = "naive average" if ua_b < naive else "zero-shot baseline"
         lines.append(
             f"  - Beta softens the gate ({_fmt_mAP(ua_a)}% -> {_fmt_mAP(ua_b)}%), "
-            f"but Mode A still underperforms the {worse} on {ds} at n=100 — "
+            f"but Mode A still underperforms the {worse} on {ds} — "
             "the saturation artifact is softened, not resolved."
         )
     lines.append("")
@@ -461,15 +472,17 @@ def _build_compare_report(args) -> List[str]:
         if args.compare_labels else [d.name for d in args.compare_dirs]
     runs = {lab: _load_run_dir(d) for lab, d in zip(labels, args.compare_dirs)}
 
-    pilot_ns = [
-        r["meta"]["n_test_images"]
-        for r in (runs[labels[0]]["ladd"], runs[labels[0]]["dfire"])
-        if r.get("meta", {}).get("n_test_images") is not None
-    ]
-    pilot = args.pilot or any(n <= 100 for n in pilot_ns)
-    label_n = f"n={max(pilot_ns)}" if (pilot and pilot_ns and not args.pilot) else args.pilot_n
+    n_by_ds = {
+        _ds_key(ds): runs[labels[0]][_ds_key(ds)].get("meta", {}).get("n_test_images")
+        for ds in ("LADD", "D-Fire")
+    }
+    known_ns = [n for n in n_by_ds.values() if n is not None]
+    pilot = args.pilot or any(n <= 100 for n in known_ns)
+    # Labels reflect the ACTUAL evaluated size per dataset (not a hardcoded
+    # n=100): "n=100 subset" for the pilot, "full test split (n=1365)" etc.
+    # for full-scale runs (2026-08-07).
     title = (
-        f"# U-ADAPT — Final Comparative Results ({label_n} subset): "
+        f"# U-ADAPT — Final Comparative Results (pilot): "
         "Analytic vs. Beta fallback"
         if pilot
         else "# U-ADAPT — Comparative Results: Analytic vs. Beta fallback"
@@ -483,18 +496,18 @@ def _build_compare_report(args) -> List[str]:
     ]
     if pilot:
         lines += [
-            "> 🧪 **PILOT RESULTS (n=100 subset)** — preliminary pipeline check on "
-            "the first 100 images per dataset (Grounding DINO Swin-T, top-k=100, "
+            "> 🧪 **PILOT RESULTS** — preliminary pipeline check on a small "
+            "image subset per dataset (Grounding DINO Swin-T, top-k=100, "
             "k=5 shots, seed 0). These numbers are NOT final thesis results; "
             "the full-data run and the 10-seed protocol "
             "(`scripts/run_10_seed_protocol.py`) supersede them.",
             "",
         ]
-    lines += _compare_exec_summary(runs)
+    lines += _compare_exec_summary(runs, n_by_ds, pilot)
     lines += ["---", "", "## mAP50 results", ""]
-    lines += _compare_mAP50_section("LADD", runs)
+    lines += _compare_mAP50_section("LADD", runs, n_by_ds, pilot)
     lines += ["", "---", ""]
-    lines += _compare_mAP50_section("D-Fire", runs)
+    lines += _compare_mAP50_section("D-Fire", runs, n_by_ds, pilot)
     lines += ["", "---", ""]
     lines += _compare_gate_section(runs)
     lines += ["", "---", ""]
@@ -503,9 +516,12 @@ def _build_compare_report(args) -> List[str]:
 
     lit_ladd = _literature_numbers(load_yaml(args.ladd_config))
     lit_dfire = _literature_numbers(load_yaml(args.dfire_config))
+    lit_label = " ".join(
+        f"{ds}={_n_label(_ds_key(ds), n_by_ds, pilot)}" for ds in ("LADD", "D-Fire")
+    )
     lines += ["## Comparison to literature baselines", "",
               "Michailidou et al. (Table III, Grounding DINO) floor/ceiling vs "
-              "the Mode A results above (n=100 subset, per gate):", ""]
+              "the Mode A results above " + f"({lit_label}, per gate)" + ":", ""]
     for ds, lit, runkey in (("LADD", lit_ladd, "ladd"), ("D-Fire", lit_dfire, "dfire")):
         cells = []
         for lab in labels:
@@ -582,6 +598,14 @@ def _ten_seed_section(analytic: Dict, beta: Dict, report_date: str,
             "(expected ladd_k1/k3/k5 and dfire_k1/k3/k5)"
         )
 
+    # Scale-aware label: the protocol meta now records the test-split size it
+    # actually evaluated (2026-08-07), so the §9 narrative can distinguish
+    # the n=100 pilot from full-scale LADD/D-Fire runs instead of hardcoding
+    # "n=100 pilot caches".
+    n_ts = (analytic.get("meta", {}) or {}).get("n_test_images") or {}
+    full_scale = bool(n_ts) and max(n_ts.values()) > 100
+    cache_txt = "full cached test split" if full_scale else "n=100 pilot caches"
+
     table_hdr = ("| cell | n | Mode A mAP50 | Naive mAP50 | d | t | p(t) | q(t) "
                  "| W | p(W) | q(W) |")
     table_sep = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
@@ -590,8 +614,8 @@ def _ten_seed_section(analytic: Dict, beta: Dict, report_date: str,
         "## 10-seed paired statistical protocol (pre-registration §9)",
         "",
         f"*Run {report_date} by `scripts/run_10_seed_protocol.py` — 10 seeds × "
-        "{ladd, dfire} × k ∈ {1, 3, 5} = 60 cells per gate on the n=100 pilot "
-        "caches, via the scripted path (02 → 03 → 04). Primary comparison: "
+        "{ladd, dfire} × k ∈ {1, 3, 5} = 60 cells per gate on the " + cache_txt
+        + ", via the scripted path (02 → 03 → 04). Primary comparison: "
         "U-ADAPT Mode A vs. naive averaging (w = 0.5). Per cell, across the 10 "
         "seeds: paired two-sided t-test AND Wilcoxon signed-rank, Cohen's d "
         "(paired, d_z), and Benjamini-Hochberg FDR control (q = 0.05) over the "
@@ -653,6 +677,7 @@ def _ten_seed_section(analytic: Dict, beta: Dict, report_date: str,
     )
     ts_example = "ladd_k1" if "ladd_k1" in order else order[0]
     ladd_ts_mean = cells_a[ts_example]["stats"]["mode_a_map50_mean"]
+    scale_txt = "full-scale" if full_scale else "n=100"
 
     lines += [
         "",
@@ -668,7 +693,7 @@ def _ten_seed_section(analytic: Dict, beta: Dict, report_date: str,
         f"- **The Beta fallback helps directionally but does not close the "
         f"gap.** Beta raises the Mode A mean on all {len(order)} cells "
         f"({min(deltas) * 100:+.1f} to {max(deltas) * 100:+.1f} pp; largest on "
-        f"D-Fire), consistent with the n=100 finding that hedging the "
+        f"D-Fire), consistent with the {scale_txt} finding that hedging the "
         f"saturated gate is directionally beneficial. Yet per-seed, Beta Mode "
         f"A beats naive averaging on {min(wins)}–{max(wins)} of 10 seeds in "
         f"every cell.",
@@ -679,16 +704,17 @@ def _ten_seed_section(analytic: Dict, beta: Dict, report_date: str,
         f"seeds.",
         "- **Naive baseline is bit-identical across the two gate runs** (same "
         "w = 0.5 scores), so the analytic-vs-beta comparison is exactly paired.",
-        "- **Verdict:** at pilot scale, neither the analytic gate nor the "
-        "pre-registered Beta contingency beats the uncertainty-blind baseline. "
-        "The D5-triggered fallback is a robustness contingency, not a fix. The "
-        "pre-registered primary comparison (§9) is settled at n=100: the gate, "
-        "as implemented, does not recover value from the uncertainty inputs.",
+        "- **Verdict:** at the evaluated scale, neither the analytic gate nor "
+        "the pre-registered Beta contingency beats the uncertainty-blind "
+        "baseline. The D5-triggered fallback is a robustness contingency, not "
+        "a fix. The pre-registered primary comparison (§9) is settled at "
+        + scale_txt + ": the gate, as implemented, does not recover value from "
+        "the uncertainty inputs.",
         "",
         f"> Methodology note: the 10-seed protocol evaluates the full cached "
-        f"test split via the scripted path (02 → 03 → 04), whereas the n=100 "
-        f"tables above use the demo path; the small mean differences (e.g. "
-        f"LADD analytic {_fmt_mAP(ladd_ana_n100)}% vs "
+        f"test split via the scripted path (02 → 03 → 04), whereas the tables "
+        f"above use the demo path (at the same test-split size); the small "
+        f"mean differences (e.g. LADD analytic {_fmt_mAP(ladd_ana_n100)}% vs "
         f"{100.0 * ladd_ts_mean:.2f}% here) reflect the documented path-level "
         f"differences in gate inputs, not a data change.",
     ]
@@ -720,6 +746,11 @@ def _mode_b_report(args) -> List[str]:
         )
     n_seeds = int(meta_b.get("n_seeds", 0))
     pilot = n_seeds < 10
+    # Scale-aware caveats: the protocol meta records the evaluated test-split
+    # size (2026-08-07), so full-scale runs do not inherit the n=100 pilot
+    # "tiny train cache" caveats.
+    n_ts = meta_b.get("n_test_images") or {}
+    full_scale = bool(n_ts) and max(n_ts.values()) > 100
     zs = meta_b.get("zero_shot_map50", {})
 
     lines = [
@@ -795,14 +826,24 @@ def _mode_b_report(args) -> List[str]:
             for c in pmin
         )
         lines.append(f"| {k} | {span} | {per} |")
-    lines += [
-        "",
-        "> Pre-registered size is 20 boxes per class. At n=100 pilot scale the "
-        "train caches are tiny (LADD 10 images, D-Fire 9 images), so cells "
-        "fall short of 20 (ranges above span the seeds) — the gate was fit on "
-        "exactly those counts (a full-scale run samples the full train split "
-        "and is not limited this way).",
-    ]
+    if full_scale:
+        lines += [
+            "",
+            "> Pre-registered size is 20 boxes per class; at full scale the "
+            "sampler hits 20 per class on every cell (verify the ranges above "
+            "are flat at 20) — the gate is trained on the pre-registered "
+            "count, unlike the n=100 pilot where the train caches were tiny "
+            "(LADD 10 images, D-Fire 9).",
+        ]
+    else:
+        lines += [
+            "",
+            "> Pre-registered size is 20 boxes per class. At n=100 pilot scale "
+            "the train caches are tiny (LADD 10 images, D-Fire 9 images), so "
+            "cells fall short of 20 (ranges above span the seeds) — the gate "
+            "was fit on exactly those counts (a full-scale run samples the "
+            "full train split and is not limited this way).",
+        ]
 
     # --- Four-way comparison ----------------------------------------------
     lines += [
@@ -829,10 +870,10 @@ def _mode_b_report(args) -> List[str]:
         "",
         "> Zero-shot = raw detector scores on the FULL cached test split "
         "(computed once per dataset, seed-independent). Mode A means come from "
-        "`--analytic-stats` when provided. All values are mAP50 percentages at "
-        "pilot scale — they are not the literature zero-shot floors "
-        "(LADD 61.0%, D-Fire 27.5%, Michailidou et al. Table III), which are "
-        "measured over the full test set.",
+        "`--analytic-stats` when provided. All values are mAP50 percentages "
+        "at " + ("full scale" if full_scale else "pilot scale") + " — they are "
+        "not the literature zero-shot floors (LADD 61.0%, D-Fire 27.5%, "
+        "Michailidou et al. Table III), which are measured over the full test set.",
     ]
 
     # --- Interpretation (data-driven) --------------------------------------
@@ -918,12 +959,20 @@ def _mode_b_report(args) -> List[str]:
                 f"but neither learned nor analytic gating recovers the naive "
                 f"baseline at pilot scale."
             )
-        lines += [
-            "",
-            "> ⚠️ **Pilot-scale caveats that limit the generality of this verdict:** "
+        caveat = (
             "(1) the train caches are tiny (LADD 10 images, D-Fire 9), so the "
             "calibration sets are far below 20 boxes/class and the gate's learning "
-            "signal is minimal; (2) affinity saturates ≥ 0.65 on real features, so "
+            "signal is minimal; "
+            if not full_scale else
+            "(1) the pre-registered 20 boxes/class were sampled (see the audit "
+            "table) — this is the full-scale experiment, so the tiny-cache "
+            "caveat no longer applies; "
+        )
+        lines += [
+            "",
+            "> ⚠️ **Caveats that limit the generality of this verdict:** "
+            + caveat
+            + "(2) affinity saturates ≥ 0.65 on real features, so "
             "`visual_correct` is True for essentially every sampled box and the "
             "soft targets collapse toward σ(S_visual − S_text) — the gate has little "
             "directional signal to learn from; (3) the soft-target mapping in "

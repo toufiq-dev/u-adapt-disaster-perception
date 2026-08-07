@@ -4,6 +4,50 @@ Records all deviations from the pre-registration, dataset replacements, and
 significant pipeline changes. Every entry cites the date and the affected
 section of `docs/pre_registration.md`.
 
+## 2026-08-07 — Full-scale Colab preparation: N_TEST_IMAGES=100 limit removed, disconnect-safe extraction resume, resumable D-Fire mirror, LADD train GT, n-agnostic reports, full-scale guide
+
+- **Extraction is now RESUME-SAFE across Colab disconnects**
+  (`src/uadapt/features/cache_engine.py`): `extract_and_cache` previously
+  resumed only when `manifest.json` existed — but that file is written only
+  when a split COMPLETES, so a disconnected full-scale run (LADD 1,365 /
+  D-Fire 21,527 images, hours on a free T4) restarted from image 0. Resume
+  now accepts the partial `records.json` state too, so a re-run continues
+  from the last checkpoint. Test: `tests/test_cache_engine.py`
+  (partial-state resume without manifest).
+- **D-Fire mirror download is resumable AND atomic** (`data/download_scripts/download_datasets.py`):
+  existing non-empty image files are skipped, so re-running after a Colab
+  disconnect does not re-fetch all 21,527 images; downloads now go through a
+  `.part` temp file + atomic rename (matching the OneDrive path), so a
+  mid-write disconnect can never leave a truncated image that the skip
+  check would then treat as complete.
+- **`data/annotations/ladd_train.json` is now generated** by the LADD
+  downloader when the archive ships `annotations/train.json` (Kaggle LaDD
+  layout), remapped (`Pedestrian → person`). Previously only `ladd_test.json`
+  was produced, but the Mode B calibration sampler consumes `{ds}_train.json`
+  — a full-scale LADD Mode B run would have failed at calibration without
+  this.
+- **`scripts/run_10_seed_protocol.py` records `meta.n_test_images`** (distinct
+  image ids in each dataset's cached test split) so reports can distinguish
+  the n=100 pilot from full-scale runs.
+- **Report generator is n-agnostic** (`scripts/generate_real_data_report.py`):
+  the hardcoded "n=100 subset" labels and pilot caveats in the
+  `--compare-dirs`, 10-seed (§9), and `--mode-b-stats` reports now reflect
+  the ACTUAL evaluated size per dataset (pilot → "n=100 subset"; full-scale →
+  "full test split (n=1365)" etc.), and the pilot-caveat text is suppressed
+  when the run is full scale. The default `--n-test-images` help and the
+  `run_real_data_validation.sh` usage examples were updated to the full-scale
+  default (unset = all images; the n=100 pilot explicitly passed
+  `N_TEST_IMAGES=100`).
+- **Full-scale Colab execution guide added**: `docs/colab_full_scale_guide.md`
+  — two clearly separated phases: (A) Extraction (download full LADD/D-Fire,
+  RAM-safe single-image streaming via `01_extract_and_cache.py`, the
+  resume-loop cell for Colab's ~12 h session limit, zip + Drive transfer) and
+  (B) Mode B 10-seed protocol on the full caches (fresh session, CPU
+  sufficient). NOTE on batching: the repo streams ONE image at a time — there
+  is no `--batch-size` flag, and batching was deliberately not added because
+  Grounding DINO pads per image and a batch would silently change the cached
+  features vs. the pilot (breaking comparability).
+
 ## 2026-08-07 — Mode B 10-seed protocol tooling (pre-registered contingency Risk R3): soft-target fix, calibration sampler, protocol --mode B, report generator, Colab guide
 
 - **Soft-target bug fix vs. the pre-registration** (proposal §5.4.2):

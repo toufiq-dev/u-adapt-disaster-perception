@@ -355,10 +355,19 @@ def _hf_rows(split: str, offset: int = 0, length: int = 100) -> List[Dict]:
 
 
 def _hf_download(url: str, dest: Path) -> None:
+    """Download ``url`` to ``dest`` atomically (via a ``.part`` temp file).
+
+    Writes to ``<dest>.part`` and renames on success, so a disconnect
+    mid-write can never leave a truncated file at the final path — the
+    resumable-skip check (``exists() and st_size > 0``) only ever sees
+    complete downloads (2026-08-07).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
+    with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as out:
         shutil.copyfileobj(resp, out)
+    tmp.replace(dest)
 
 
 def _hf_download_retry(url: str, dest: Path, attempts: int = 3) -> bool:
@@ -471,6 +480,12 @@ def run_dfire_mirror(args: argparse.Namespace) -> int:
         dest_dir.mkdir(parents=True, exist_ok=True)
         for r in rows:
             img_dest = dest_dir / r["filename"]
+            # Resumable mirror download (2026-08-07): a Colab session can
+            # disconnect mid-download; a re-run must NOT re-fetch the 21,527
+            # images already on disk. Non-empty existing files are kept.
+            if img_dest.exists() and img_dest.stat().st_size > 0:
+                copied.append(img_dest)
+                continue
             src = r.get("image_src")
             if not src:
                 failures.append(r["filename"])
@@ -795,27 +810,35 @@ def run_ladd(args: argparse.Namespace) -> int:
 
     # GT: explicit --ladd-gt wins; else auto-extract the archive's COCO test
     # annotations (Kaggle LaDD ships annotations/test.json) and filter+remap.
+    # GT: explicit --ladd-gt wins; else auto-extract the archive's COCO
+    # annotations (Kaggle LaDD ships annotations/{train,test}.json) and
+    # filter+remap. BOTH splits are needed at full scale: the Mode B
+    # calibration sampler consumes data/annotations/ladd_train.json, so a
+    # missing train GT would silently break the 10-seed protocol (2026-08-07).
+    remap = _parse_remap(args.ladd_gt_remap)
+    gt_splits = ("test",) if args.ladd_gt else ("train", "test")
     if args.ladd_gt:
         gt = Path(args.ladd_gt)
         out = args.annotations_root / "ladd_test.json"
         shutil.copy2(gt, out)
         print(f"  GT copied -> {out}")
-    else:
-        auto = extracted / "annotations" / "test.json"
-        if auto.exists() and copied.get("test"):
-            remap = _parse_remap(args.ladd_gt_remap)
-            _copy_gt_subset(auto, args.annotations_root / "ladd_test.json",
-                            copied["test"], remap=remap)
+    for split in gt_splits:
+        if split == "test" and args.ladd_gt:
+            continue
+        auto = extracted / "annotations" / f"{split}.json"
+        out = args.annotations_root / f"ladd_{split}.json"
+        if auto.exists() and copied.get(split):
+            _copy_gt_subset(auto, out, copied[split], remap=remap)
             print(
-                f"  GT extracted from archive + filtered to test subset "
-                f"(categories remapped: {args.ladd_gt_remap or 'none'}) -> "
-                f"{args.annotations_root / 'ladd_test.json'}"
+                f"  GT extracted from archive + filtered to {split} subset "
+                f"(categories remapped: {args.ladd_gt_remap or 'none'}) -> {out}"
             )
         else:
             print(
-                "  NOTE: no --ladd-gt given and no annotations/test.json found in "
-                "the archive — place the COCO GT JSON at "
-                "data/annotations/ladd_test.json before running the pipeline."
+                f"  NOTE: no {split} GT generated — archive lacks "
+                f"annotations/{split}.json (or no --ladd-gt given). Place "
+                f"the COCO GT JSON at data/annotations/ladd_{split}.json "
+                f"before running the pipeline."
             )
     return 0
 
