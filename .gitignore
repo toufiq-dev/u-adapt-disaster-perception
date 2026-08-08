@@ -8,8 +8,6 @@ __pycache__/
 .venv/
 venv/
 venv3/
-.env
-.env.*
 .ipynb_checkpoints/
 *.pyc
 
@@ -71,4 +69,5 @@ U-ADAPT_Revision_Log.md
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/
+config.bat
+node_modules
